@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>Cairn</title>
+
+<link rel="stylesheet" href="lib/leaflet/leaflet.css" />
+<link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+
+<div id="map"></div>
+
+<!-- Top search bar -->
+<div id="topbar">
+  <button id="btn-search" class="icon-btn" data-icon="search" title="Search"></button>
+  <input id="search-input" type="text" placeholder="Search any place, address, or lat,lng" />
+  <button id="btn-settings" class="icon-btn" data-icon="settings" title="Settings"></button>
+</div>
+<div id="status-chip">
+  <span id="gps-status">GPS searching…</span>
+</div>
+<div id="search-results" class="hidden"></div>
+
+<!-- Floating action buttons - all collapsed behind a single menu toggle -->
+<div id="fab-stack">
+  <div id="fab-menu-items" class="fab-menu-items hidden">
+    <button id="btn-compass" class="fab compass-fab" title="Reset to North">
+      <svg id="compass-needle" viewBox="0 0 40 40" width="30" height="30">
+        <circle cx="20" cy="20" r="18" fill="#171d26" stroke="#3a4655" stroke-width="1.5"/>
+        <polygon points="20,4 24,20 20,17 16,20" fill="#e6484f"/>
+        <polygon points="20,36 24,20 20,23 16,20" fill="#dfe6ec"/>
+      </svg>
+    </button>
+    <button id="btn-locate" class="fab" data-icon="locate" title="Center on my location"></button>
+    <button id="btn-layers" class="fab" data-icon="layers" title="Layers"></button>
+    <button id="btn-download" class="fab" data-icon="download" title="Download region"></button>
+    <button id="btn-data" class="fab" data-icon="folder" title="Sessions, routes, map data"></button>
+    <button id="btn-waypoint" class="fab" data-icon="flag" title="Flag mode"></button>
+    <button id="btn-route" class="fab" data-icon="route" title="Route mode"></button>
+    <button id="btn-record" class="fab" data-icon="record" title="Record track"></button>
+  </div>
+
+  <button id="btn-fab-menu" class="fab fab-menu-toggle" data-icon="menu" title="More"></button>
+</div>
+
+<!-- Shared backdrop for sheets and dialogs -->
+<div id="backdrop" class="hidden"></div>
+
+<!-- Layers sheet -->
+<div id="sheet-layers" class="sheet hidden">
+  <div class="sheet-handle"></div>
+  <div class="sheet-header"><h2>Layers</h2><button class="icon-btn sheet-close" data-target="sheet-layers" data-icon="close"></button></div>
+  <div class="sheet-body">
+    <p class="hint">Top of the list renders on top of the map. Use the arrows to reorder, checkbox to show/hide, slider for transparency.</p>
+    <div id="layer-manager-list"></div>
+
+    <div class="data-section">
+      <h3>Layer presets</h3>
+      <p class="hint">Save the current order, visibility, and transparency of every layer as a named preset you can load again later.</p>
+      <button id="btn-save-layer-preset" class="btn-primary full-width">Save current layers as preset</button>
+      <ul id="saved-layer-presets-list" class="data-list"></ul>
+    </div>
+  </div>
+</div>
+
+<!-- Download sheet -->
+<div id="sheet-download" class="sheet hidden">
+  <div class="sheet-handle"></div>
+  <div class="sheet-header"><h2>Download region</h2><button class="icon-btn sheet-close" data-target="sheet-download" data-icon="close"></button></div>
+  <div class="sheet-body">
+    <p class="hint">Search a city, county, state, or country. Bigger areas mean bigger downloads, but fully usable offline once saved.</p>
+
+    <div class="search-row">
+      <input type="text" id="region-search-input" placeholder="e.g. Pima County, or France" />
+      <button id="btn-region-search" class="btn-primary">Search</button>
+    </div>
+
+    <div id="region-search-results"></div>
+
+    <div id="region-selected-info" class="hidden">
+      <p class="selected-label"><b id="region-selected-name"></b></p>
+      <label>Min zoom <input type="number" id="zoom-min" value="8" min="1" max="18" /></label>
+      <label>Max zoom <input type="number" id="zoom-max" value="14" min="1" max="18" /></label>
+      <div id="download-layer-checks" class="layer-checks"></div>
+      <div id="estimate-readout" class="hint"></div>
+      <div id="download-progress" class="hidden">
+        <div class="progress-bar"><div id="progress-fill"></div></div>
+        <span id="progress-text">0%</span>
+      </div>
+      <button id="btn-start-download" class="btn-primary full-width">Start download</button>
+    </div>
+
+    <div class="data-section">
+      <h3>Downloaded map areas</h3>
+      <p id="tile-cache-stats-download" class="hint"></p>
+      <ul id="saved-map-regions-list-download" class="data-list"></ul>
+      <button id="btn-delete-all-maps-download" class="btn-danger full-width">Delete all downloaded map data</button>
+    </div>
+  </div>
+</div>
+
+<!-- Data / Sessions sheet -->
+<div id="sheet-data" class="sheet hidden">
+  <div class="sheet-handle"></div>
+  <div class="sheet-header"><h2>Sessions &amp; data</h2><button class="icon-btn sheet-close" data-target="sheet-data" data-icon="close"></button></div>
+  <div class="sheet-body">
+    <div class="data-section">
+      <h3>Current session: <span id="current-session-label">Unsaved</span></h3>
+      <div class="button-row">
+        <button id="btn-save-session" class="btn-primary">Save session</button>
+        <button id="btn-new-session" class="btn-secondary">New session</button>
+      </div>
+      <p class="hint">A session is your flags, routes, and tracks. Downloaded map data is always kept separately, no matter what.</p>
+      <ul id="saved-sessions-list" class="data-list"></ul>
+    </div>
+
+    <div class="data-section">
+      <h3>Saved routes</h3>
+      <ul id="saved-routes-list" class="data-list"></ul>
+    </div>
+
+    <div class="data-section">
+      <h3>Layer presets</h3>
+      <ul id="saved-layer-presets-list-data" class="data-list"></ul>
+    </div>
+
+    <div class="data-section">
+      <h3>Downloaded map areas</h3>
+      <p id="tile-cache-stats" class="hint"></p>
+      <ul id="saved-map-regions-list" class="data-list"></ul>
+      <button id="btn-delete-all-maps" class="btn-danger full-width">Delete all downloaded map data</button>
+    </div>
+  </div>
+</div>
+
+<!-- Settings sheet -->
+<div id="sheet-settings" class="sheet hidden">
+  <div class="sheet-handle"></div>
+  <div class="sheet-header"><h2>Settings</h2><button class="icon-btn sheet-close" data-target="sheet-settings" data-icon="close"></button></div>
+  <div class="sheet-body">
+    <div class="toggle-row">
+      <div>
+        <div class="toggle-title">Debug mode</div>
+        <div class="hint">Shows a log of what the app is doing - useful for troubleshooting, off by default.</div>
+      </div>
+      <label class="switch">
+        <input type="checkbox" id="toggle-debug-mode" />
+        <span class="switch-track"></span>
+      </label>
+    </div>
+
+    <div class="data-section">
+      <h3>Storage</h3>
+      <p class="hint" id="storage-status-text">Checking storage status…</p>
+      <button id="btn-setup-storage" class="btn-primary full-width">Set up storage</button>
+      <div id="storage-backup-actions" class="hidden" style="margin-top:12px;">
+        <div class="button-row">
+          <button id="btn-export-backup" class="btn-secondary">Export backup</button>
+          <button id="btn-import-backup" class="btn-secondary">Import backup</button>
+        </div>
+        <ul id="backup-files-list" class="data-list"></ul>
+      </div>
+    </div>
+
+    <p class="hint" style="margin-top:18px; border-top:1px solid var(--border-soft); padding-top:14px;">
+      App icon: "Cairn" from the Temaki icon set by Bryan Housel, CC0 license.
+    </p>
+  </div>
+</div>
+
+<!-- First-launch onboarding dialogs -->
+<div id="dialog-onboarding-offline" class="dialog dialog-centered hidden">
+  <h2>Before you head out</h2>
+  <p class="hint" style="font-size:14.5px; color: var(--text);">Cairn only works offline for areas you've downloaded ahead of time. Satellite, topo, and trail imagery for a region needs to be downloaded first - from the download icon in the menu - while you still have signal.</p>
+  <div class="dialog-actions">
+    <button id="btn-onboarding-offline-ok" class="btn-primary full-width">Got it</button>
+  </div>
+</div>
+
+<div id="dialog-onboarding-storage" class="dialog dialog-centered hidden">
+  <h2>Set up storage?</h2>
+  <p class="hint" style="font-size:14.5px; color: var(--text);">Cairn can back up your flags, routes, tracks, and settings to a folder on your device, so you can restore them later or move them to a new phone. You can do this later from Settings instead.</p>
+  <div class="dialog-actions">
+    <button id="btn-onboarding-storage-later" class="btn-secondary">Later</button>
+    <button id="btn-onboarding-storage-setup" class="btn-primary">Set up now</button>
+  </div>
+</div>
+
+<div id="dialog-storage-folder" class="dialog dialog-centered hidden">
+  <h2>Choose a folder</h2>
+  <p class="hint" style="font-size:14.5px; color: var(--text);">Cairn will create a "Cairn" folder inside whichever one you pick.</p>
+  <div class="dialog-actions">
+    <button id="btn-folder-documents" class="btn-secondary full-width">Documents</button>
+  </div>
+  <div class="dialog-actions">
+    <button id="btn-folder-downloads" class="btn-secondary full-width">Downloads</button>
+  </div>
+</div>
+
+<!-- Flag edit dialog -->
+<div id="dialog-waypoint" class="dialog hidden">
+  <h2>Edit flag</h2>
+  <label>Name <input type="text" id="wp-name" placeholder="Flag name" /></label>
+  <label>Notes <textarea id="wp-notes" rows="2"></textarea></label>
+  <label>Icon</label>
+  <div id="wp-icon-picker" class="icon-picker"></div>
+  <div class="dialog-actions">
+    <button id="btn-delete-waypoint" class="btn-danger">Delete</button>
+    <button id="btn-save-waypoint" class="btn-primary">Save</button>
+  </div>
+</div>
+
+<!-- Generic name-prompt dialog -->
+<div id="dialog-name-prompt" class="dialog hidden">
+  <h2 id="name-prompt-title">Name this</h2>
+  <input type="text" id="name-prompt-input" placeholder="Name" />
+  <div class="dialog-actions">
+    <button id="btn-name-prompt-cancel" class="btn-secondary">Cancel</button>
+    <button id="btn-name-prompt-confirm" class="btn-primary">Save</button>
+  </div>
+</div>
+
+<!-- Generic confirm dialog -->
+<div id="dialog-confirm" class="dialog hidden">
+  <h2 id="confirm-title">Are you sure?</h2>
+  <p id="confirm-message" class="hint"></p>
+  <div class="dialog-actions">
+    <button id="btn-confirm-no" class="btn-secondary">Cancel</button>
+    <button id="btn-confirm-yes" class="btn-danger">Yes</button>
+  </div>
+</div>
+
+<!-- Start-recording confirm dialog -->
+<div id="dialog-start-record" class="dialog hidden">
+  <h2>Start recording a track?</h2>
+  <p class="hint">Your GPS path will be logged until you stop.</p>
+  <div class="dialog-actions">
+    <button id="btn-start-record-no" class="btn-secondary">Cancel</button>
+    <button id="btn-start-record-yes" class="btn-primary">Start</button>
+  </div>
+</div>
+
+<!-- Route planning status pill (replaces the old top banner) -->
+<!-- Flag mode status pill: pick which icon new flags use, undo/redo drops -->
+<div id="flag-status-pill" class="status-pill hidden" style="flex-direction: column; align-items: stretch;">
+  <div style="display:flex; align-items:center; gap:8px;">
+    <span data-icon="flag" class="pill-icon"></span>
+    <button id="btn-undo-flag" class="icon-btn tiny pill-icon-btn" data-icon="undo" title="Undo last flag"></button>
+    <button id="btn-redo-flag" class="icon-btn tiny pill-icon-btn" data-icon="redo" title="Redo"></button>
+    <button id="btn-flag-icon-toggle" class="pill-btn pill-btn-ghost">Icon: Flag</button>
+  </div>
+  <div id="flag-type-picker" class="icon-picker hidden" style="margin-top:8px;"></div>
+</div>
+
+<div id="route-status-pill" class="status-pill hidden">
+  <span data-icon="route" class="pill-icon"></span>
+  <span id="route-distance">0.0 mi</span>
+  <button id="btn-undo-route" class="icon-btn tiny pill-icon-btn" data-icon="undo" title="Undo last point"></button>
+  <button id="btn-redo-route" class="icon-btn tiny pill-icon-btn" data-icon="redo" title="Redo"></button>
+  <button id="btn-finish-route" class="pill-btn">Finish</button>
+  <button id="btn-cancel-route" class="pill-btn pill-btn-ghost">Cancel</button>
+</div>
+
+<!-- Track recording status pill -->
+<div id="record-status-pill" class="status-pill hidden">
+  <span class="pill-icon recording-dot"></span>
+  <span id="record-stats">0.0 mi · 0:00</span>
+</div>
+
+<!-- Map overlays: legends and radar playback controls live ON the map
+     itself (bottom-left), not buried in the Layers sheet, so they stay
+     visible whenever their layer is on regardless of which sheet is open.
+     Both sit in one stacking container so they never overlap each other,
+     and each has a collapsible header. -->
+<div id="map-overlays-stack">
+  <div id="map-overlay-radar" class="map-overlay hidden">
+    <div class="map-overlay-header" data-target="map-overlay-radar">
+      <span>Weather Radar</span>
+      <span class="chevron" data-icon="chevronDown"></span>
+    </div>
+    <div class="map-overlay-body">
+      <div class="radar-controls">
+        <button class="icon-btn tiny" id="btn-radar-prev" data-icon="chevronUp" style="transform:rotate(-90deg)"></button>
+        <button class="icon-btn tiny" id="btn-radar-play" data-icon="play"></button>
+        <button class="icon-btn tiny" id="btn-radar-next" data-icon="chevronUp" style="transform:rotate(90deg)"></button>
+        <span id="radar-frame-time" class="hint">Loading…</span>
+      </div>
+      <div class="legend" id="radar-legend"></div>
+    </div>
+  </div>
+
+  <div id="map-overlay-blm" class="map-overlay hidden">
+    <div class="map-overlay-header" data-target="map-overlay-blm">
+      <span>Public Land Ownership</span>
+      <span class="chevron" data-icon="chevronDown"></span>
+    </div>
+    <div class="map-overlay-body">
+      <div class="legend" id="blm-legend">Loading…</div>
+    </div>
+  </div>
+</div>
+
+<script src="lib/leaflet/leaflet.js"></script>
+<script src="lib/leaflet/leaflet-rotate.js"></script>
+<script type="module" src="js/app.js"></script>
+</body>
+</html>

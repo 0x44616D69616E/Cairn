@@ -1,0 +1,22 @@
+{
+  "name": "cairn",
+  "version": "0.1.0",
+  "description": "Cairn - a fully offline GIS-style topo/satellite/trail map with GPS, waypoints, and route recording",
+  "scripts": {
+    "sync": "npx cap sync android",
+    "fix-manifest": "node scripts/ensure-manifest-permissions.js",
+    "open:android": "npx cap open android",
+    "add:android": "npx cap add android"
+  },
+  "dependencies": {
+    "@capacitor/android": "^6.0.0",
+    "@capacitor/core": "^6.0.0",
+    "@capacitor/filesystem": "^6.0.0",
+    "@capacitor/geolocation": "^6.0.0",
+    "@capacitor/preferences": "^6.0.0",
+    "leaflet": "^1.9.4"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^6.0.0"
+  }
+}
