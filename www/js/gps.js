@@ -22,9 +22,7 @@ try {
   CapGeo = null;
 }
 
-export function startWatching(onUpdate) {
-  onUpdateCallback = onUpdate;
-
+function startWatchInternal() {
   if (CapGeo) {
     // Wrapped in try/catch deliberately: a single uncaught error here would
     // otherwise stop every remaining line of app.js from executing (this is
@@ -33,10 +31,15 @@ export function startWatching(onUpdate) {
     // ever got a chance to run).
     try {
       const result = CapGeo.watchPosition(
-        { enableHighAccuracy: true, timeout: 10000 },
+        // maximumAge caps how old a fix Android's location provider is
+        // allowed to hand back before it's expected to get a fresh one -
+        // matching the web fallback below, which already had this. Without
+        // it here, the native path was technically free to occasionally
+        // serve a slightly-stale cached fix instead of a live one.
+        { enableHighAccuracy: true, timeout: 10000, maximumAge: 2000 },
         (position, err) => {
           if (err) {
-            onUpdate({ error: err.message || String(err) });
+            notifyUpdate({ error: err.message || String(err) });
             return;
           }
           if (position) emit(position);
@@ -48,21 +51,42 @@ export function startWatching(onUpdate) {
       // set up - only chain .then if we actually got a thenable back.
       if (result && typeof result.then === 'function') {
         result.then((id) => { watchId = id; }).catch((e) => {
-          onUpdate({ error: `watchPosition setup failed: ${e.message || e}` });
+          notifyUpdate({ error: `watchPosition setup failed: ${e.message || e}` });
         });
       }
     } catch (e) {
-      onUpdate({ error: `Geolocation plugin error: ${e.message || e}` });
+      notifyUpdate({ error: `Geolocation plugin error: ${e.message || e}` });
     }
   } else if (navigator.geolocation) {
     watchId = navigator.geolocation.watchPosition(
       (position) => emit(position),
-      (err) => onUpdate({ error: err.message }),
+      (err) => notifyUpdate({ error: err.message }),
       { enableHighAccuracy: true, maximumAge: 2000, timeout: 10000 }
     );
   } else {
-    onUpdate({ error: 'No geolocation available on this device.' });
+    notifyUpdate({ error: 'No geolocation available on this device.' });
   }
+}
+
+function notifyUpdate(payload) {
+  if (onUpdateCallback) onUpdateCallback(payload);
+}
+
+export function startWatching(onUpdate) {
+  onUpdateCallback = onUpdate;
+  startWatchInternal();
+}
+
+// Tears down the current watch and starts a fresh one - a "resync" button
+// for GPS position drift. Whether this actually helps depends on what's
+// causing the drift: it gives the location provider a clean slate to
+// reacquire from (can help if it's gotten stuck on stale internal
+// averaging), but it can't do anything about real signal conditions
+// (tree cover, canyon walls, being between buildings) - that's physical,
+// not a state that restarting clears.
+export function resync() {
+  stopWatching();
+  startWatchInternal();
 }
 
 function emit(position) {
@@ -98,6 +122,24 @@ export function distanceMiles(a, b) {
 
   const h = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
   return R * 2 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
+}
+
+// Formats a distance (in miles, this module's base unit throughout) for
+// display, switching to the smaller unit (feet/meters) for short distances
+// instead of always showing miles/km - "140 ft" reads a lot better than
+// "0.03 mi" for a single short route segment. The metric crossover at
+// 1000m is the obvious one (that's what makes it a kilometer); the
+// imperial crossover at 528ft (0.1 mi) is a common convention in mapping
+// apps for the same reason, there's no exact equivalent "clean" number.
+export function formatDistance(miles, useMetric) {
+  if (useMetric) {
+    const meters = miles * 1609.344;
+    if (meters < 1000) return `${Math.round(meters)} m`;
+    return `${(meters / 1000).toFixed(2)} km`;
+  }
+  const feet = miles * 5280;
+  if (feet < 528) return `${Math.round(feet)} ft`;
+  return `${miles.toFixed(2)} mi`;
 }
 
 function toRad(deg) {

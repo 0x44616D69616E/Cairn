@@ -18,7 +18,8 @@ const manifestPath = path.join(__dirname, '..', 'android', 'app', 'src', 'main',
 
 const REQUIRED_PERMISSIONS = [
   '<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />',
-  '<uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />'
+  '<uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />',
+  '<uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />'
 ];
 
 if (!fs.existsSync(manifestPath)) {
