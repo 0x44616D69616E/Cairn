@@ -168,12 +168,30 @@ export function createOfflineTileLayer(L, source, opacity) {
           return;
         }
 
-        // Not cached - try the network (only works if online).
-        buildTileUrl(source, z, x, y).then((url) => fetch(url))
-          .then((res) => {
-            if (!res.ok) throw new Error('tile fetch failed');
-            return res.blob();
-          })
+        // Not cached - try the network (only works if online). One retry
+        // on a transient-looking failure (server error / rate limit)
+        // before giving up - a single blip from a slow government GIS
+        // server shouldn't mean a tile silently stays blank forever.
+        const attemptFetch = (attempt) =>
+          buildTileUrl(source, z, x, y)
+            .then((url) => fetch(url))
+            .then((res) => {
+              if (!res.ok) {
+                const err = new Error(`HTTP ${res.status} ${res.statusText || ''}`.trim());
+                err.status = res.status;
+                throw err;
+              }
+              return res.blob();
+            })
+            .catch((err) => {
+              const retryable = attempt === 0 && (!err.status || err.status >= 500 || err.status === 429);
+              if (retryable) {
+                return new Promise((resolve) => setTimeout(resolve, 700)).then(() => attemptFetch(1));
+              }
+              throw err;
+            });
+
+        attemptFetch(0)
           .then((blob) => {
             putTileBlob(layerId, z, x, y, blob); // cache for next time
             tile.src = URL.createObjectURL(blob);
@@ -181,7 +199,9 @@ export function createOfflineTileLayer(L, source, opacity) {
           })
           .catch((err) => {
             // Offline and not cached: leave a transparent tile instead of
-            // a broken image icon. Still worth knowing about while testing.
+            // a broken image icon. Still worth knowing about while testing -
+            // the real status/error is what actually lets this be diagnosed
+            // later, unlike a generic "tile fetch failed" for every case.
             import('./debugOverlay.js').then(({ logError }) =>
               logError(`Live tile fetch failed (${layerId} z${z}): ${err.message}`)
             );

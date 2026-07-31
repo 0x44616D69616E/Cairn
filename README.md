@@ -6,6 +6,27 @@ Cairn works entirely offline once you've downloaded a region: satellite imagery,
 
 No account. No analytics. Your flags, routes, and tracks never leave your phone unless you explicitly export a backup.
 
+## What's new in 1.1.0
+
+### New
+
+- **Compass ribbon (beta)** — a sliding heading strip below the search bar, driven by Android's fused rotation-vector sensor (accelerometer + gyroscope + magnetometer) rather than the magnetometer alone, so it doesn't drift the way a raw compass reading does. True north is corrected locally from the World Magnetic Model — no network needed. Off by default; enable it in Settings. Tap the ribbon for manual north calibration if you know which way north actually is.
+- **Metric / imperial toggle** — every distance in the app (routes, tracks, segments, live recording) switches between mi/ft and km/m from Settings. Short distances now read as feet or metres instead of a tiny decimal fraction of a mile.
+- **Scale bar** — miles and kilometres share one overlaid bar, ticks mirrored above and below a common centre line. On by default, hideable in Settings; legends drop into its place when hidden.
+- **Storage folder browser** — pick any folder on the device for backups, not just Documents or Downloads. Requires Android's "All files access" permission, granted once from the system settings screen the app sends you to.
+- **GPS status indicator** — spinning arrows while searching, then a green or amber dot for fix quality; red now means an actual failure rather than just a loose fix. The accuracy circle on the map appears exactly when the dot goes amber. Tap for accuracy, coordinates and fix age, or to resync — resync also works from the locate button or by tapping your own position marker.
+- **Route details** — tap a route on the map, then "More" for rename, delete, total distance, and a per-segment distance breakdown.
+
+### Fixed
+
+- **Map layers going blank.** A stale variable reference threw partway through the layer-application loop, so any layer ordered after weather radar silently never got drawn. This one predates 1.0.0.
+- **Weather radar playback.** Three separate causes: frame layers were built but never attached to the map, so their tiles never started loading; only the visible frame was brought to the front, leaving the rest buried under the basemap; and the "all frames loaded" check timed out early and reported success while tiles were still in flight.
+- **Radar stuck on "Loading…"** — a failed frame-list fetch was cached permanently, so every later attempt reused the dead result. Now retries, and shows a tappable error instead of loading forever.
+- **Compass losing its markings** after the phone had been backgrounded a while. The sensor also now stops while the app is in the background instead of running in your pocket.
+- **Tapping trails while placing flags** opened a route or track popup instead of dropping the flag. Applies to route planning too.
+- **Tile and legend failures** now report the actual HTTP status instead of a generic message, and retry once on transient server errors.
+- Layout overlaps between the flag menu, GPS chip and compass; scale bar alignment; legends colliding with the map credits.
+
 ## Features
 
 - **Offline map layers**: satellite, topo, trail, public land ownership (BLM Surface Management Agency data), borders, street/place labels. Download any region before you lose signal
@@ -16,7 +37,9 @@ No account. No analytics. Your flags, routes, and tracks never leave your phone 
 - **Track recording**: live distance/time while recording, prompts to name and save when you stop
 - **Sessions**: save/load named snapshots of your current flags/routes/tracks
 - **Storage backup**: export/restore all your data (not map tiles) to a folder on your device via Settings
-- **Compass**: true-north-tracking needle, tap to reset map rotation
+- **Compass**: true-north-tracking needle, tap to reset map rotation; plus an optional heading ribbon (beta) driven by the device's fused orientation sensor, with manual north calibration
+- **Units**: metric or imperial throughout, switching automatically to feet/metres for short distances
+- **Scale bar**: miles and kilometres on one overlaid bar, hideable
 
 ## Building from source
 
@@ -65,7 +88,13 @@ cd android
 ./gradlew assembleDebug --no-daemon
 ```
 
-`npm run fix-manifest` is idempotent, safe to run after every sync. It exists because `npx cap sync` can silently drop the location permissions from the generated Android manifest; this script checks and re-adds them if missing.
+`npm run fix-manifest` is idempotent and safe to run after every sync. It does three things, all of which `npx cap sync` would otherwise undo or never do:
+
+1. Re-adds the location and storage permissions, which `cap sync` can silently drop from the generated Android manifest.
+2. Generates `AllFilesAccessPlugin.java` and registers it, for the storage folder browser.
+3. Generates `CompassSensorPlugin.java` and registers it, for the heading ribbon.
+
+Both plugins are generated rather than hand-maintained, so they're safe to regenerate at any time. The script finds `MainActivity.java` by searching for it rather than deriving the path from `appId` — those two can legitimately disagree if the Android project was generated before an app rename.
 
 ## Before you go outside: download your region
 
@@ -97,12 +126,15 @@ www/
     debugOverlay.js                            - on-screen debug log (Settings toggle)
   data/boundaries/          - bundled country/state GeoJSON
 scripts/
-  ensure-manifest-permissions.js  - the fix-manifest script above
+  ensure-manifest-permissions.js  - re-adds permissions cap sync can drop
+  ensure-storage-plugin.js         - generates + registers AllFilesAccessPlugin.java
+  ensure-compass-plugin.js          - generates + registers CompassSensorPlugin.java
+  lib/patchMainActivity.js           - shared MainActivity registration helper
 ```
 
 ## Installing the APK
 
-Download the latest APK from [Releases](https://github.com/0x44616D69616E/Cairn/releases/latest), or grab v1.0.0 directly [here](https://github.com/0x44616D69616E/Cairn/releases/download/v1.0.0/cairn-v1.0.0.apk).
+Download the latest APK from [Releases](https://github.com/0x44616D69616E/Cairn/releases/latest), or grab v1.1.0 directly [here](https://github.com/0x44616D69616E/Cairn/releases/download/v1.1.0/cairn-v1.1.0.apk).
 
 Cairn isn't distributed through the Play Store, so Android shows two separate warnings the first time you install it:
 
@@ -125,6 +157,7 @@ Cairn is free with no ads and no subscription. If you want to support the projec
 
 ## Credits
 
+- Developed by [0x44616D69616E](https://github.com/0x44616D69616E)
 - App icon: "Cairn" from the [Temaki icon set](https://www.figma.com/community/file/1179584099185267918) by Bryan Housel, CC0 license
 - Map data: OpenTopoMap (CC-BY-SA), Esri/Maxar/Earthstar Geographics, Waymarked Trails, OpenStreetMap contributors, USGS/BLM, RainViewer, US Census Bureau, Natural Earth
 - Built with [Leaflet](https://leafletjs.com/), [leaflet-rotate](https://github.com/fnicollier/Leaflet.Rotate), and [Capacitor](https://capacitorjs.com/)

@@ -51,12 +51,63 @@ html, body {
 }
 .icon-btn svg { width: 19px; height: 19px; }
 
+/* The row directly under the search bar always holds the GPS chip, and
+   also the compass ribbon when that's enabled. --top-row-h is that row's
+   height, so the flag/route/record pills sit clear of it either way -
+   and reclaim the space when the compass is off rather than leaving a
+   gap. (The pills previously overlapped the GPS chip outright once their
+   icon grid expanded; anchoring them to this variable fixes that too.) */
+body { --top-row-h: 38px; }
+body.compass-on { --top-row-h: 54px; }
+
 #status-chip {
   position: absolute; top: calc(64px + var(--safe-top)); left: 10px; z-index: 490;
   background: var(--surface); border: 1px solid var(--border);
-  border-radius: 999px; padding: 6px 14px; font-size: 12px; color: var(--text-muted);
-  box-shadow: var(--shadow-elevated);
+  border-radius: 999px; padding: 6px 12px; font-size: 12px; font-weight: 600;
+  color: var(--text-muted); box-shadow: var(--shadow-elevated);
+  display: flex; align-items: center; gap: 6px;
 }
+/* Vertically centre the 30px chip against the taller ribbon row. */
+body.compass-on #status-chip { top: calc(72px + var(--safe-top)); }
+
+.gps-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.gps-dot.hidden { display: none; }
+.gps-spinner { display: flex; align-items: center; justify-content: center; color: var(--text-muted); }
+.gps-spinner svg { width: 11px; height: 11px; animation: gpsSpin 1.1s linear infinite; }
+.gps-spinner.hidden { display: none; }
+@keyframes gpsSpin { to { transform: rotate(360deg); } }
+.gps-dot.good { background: var(--success); }
+.gps-dot.fair { background: #e3b341; }
+.gps-dot.poor { background: var(--danger); }
+
+/* ===== Popovers (GPS detail, compass calibration) - anchored just below
+   the top row, dismissed by tapping the trigger again or anywhere off
+   the panel. ===== */
+.popover {
+  position: absolute; top: calc(64px + var(--safe-top) + var(--top-row-h) + 6px);
+  z-index: 496; width: min(300px, calc(100vw - 20px));
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius-md); box-shadow: var(--shadow-elevated);
+  padding: 14px;
+}
+.popover.hidden { display: none; }
+#popover-gps { left: 10px; }
+#popover-compass { left: 50%; transform: translateX(-50%); }
+.popover-row {
+  display: flex; justify-content: space-between; align-items: baseline; gap: 12px;
+  font-size: 13px; padding: 5px 0; border-bottom: 1px solid var(--border-soft);
+}
+.popover-row:last-of-type { border-bottom: none; margin-bottom: 8px; }
+.popover-label { color: var(--text-muted); font-size: 12px; }
+.popover-warning { color: var(--danger); }
+.popover-warning.hidden { display: none; }
+
+/* While placing flags or laying down route points, every tap is meant for
+   the map. Route and track lines each carry a 22px-wide invisible hit
+   line (added so thin lines are tappable at all), which otherwise
+   swallows those taps and opens their popup instead - most noticeably
+   when a recorded track follows the very trail you're trying to flag. */
+body.map-tap-mode .leaflet-overlay-pane { pointer-events: none; }
 
 #search-results {
   position: absolute; top: calc(64px + var(--safe-top)); left: 10px; right: 10px; z-index: 495;
@@ -64,6 +115,82 @@ html, body {
   overflow: hidden; max-height: 45vh; overflow-y: auto; box-shadow: var(--shadow-elevated);
 }
 #search-results.hidden { display: none; }
+
+/* ===== Compass ribbon =====
+   A sliding heading strip in the style of a real navigation compass:
+   minor ticks every 15 degrees, labelled major ticks every 45, cardinals
+   picked out bolder with N in red (the usual convention), a fixed centre
+   pointer marking the heading actually being faced, and a numeric
+   readout. The track slides underneath the pointer in JS.
+
+   The edge fade is masked on the scrolling window only, not the whole
+   card, so ticks dissolve into the edges instead of being chopped off
+   mid-stroke while the pointer/readout/warning stay crisp. ===== */
+#compass-ribbon {
+  position: absolute; top: calc(64px + var(--safe-top)); left: 50%;
+  transform: translateX(-50%);
+  /* narrowed so it always clears the GPS chip sitting to its left,
+     even on the smallest phones, while staying screen-centred */
+  width: min(320px, calc(100vw - 160px)); height: 46px; z-index: 480;
+  cursor: pointer;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius-md); box-shadow: var(--shadow-elevated);
+}
+#compass-ribbon.hidden { display: none; }
+
+#compass-ribbon-window {
+  position: absolute; left: 0; right: 0; top: 5px; height: 25px;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 15%, #000 85%, transparent 100%);
+  mask-image: linear-gradient(90deg, transparent 0, #000 15%, #000 85%, transparent 100%);
+}
+#compass-ribbon-track { position: absolute; top: 0; left: 0; height: 100%; }
+
+.compass-tick {
+  position: absolute; bottom: 0; height: 6px; width: 1px; background: var(--border);
+}
+.compass-tick.major { height: 10px; width: 1.5px; background: var(--text-muted); }
+
+.compass-tick-label {
+  position: absolute; top: 0; left: 0; transform: translateX(-50%);
+  font-size: 9px; font-weight: 600; color: var(--text-muted);
+  letter-spacing: 0.5px; white-space: nowrap;
+}
+.compass-tick-label.cardinal { font-size: 11px; font-weight: 700; color: var(--text); }
+.compass-tick-label.north { color: var(--danger); }
+
+.compass-ribbon-pointer {
+  position: absolute; left: 50%; top: 3px; height: 27px; width: 1.5px;
+  transform: translateX(-50%); border-radius: 1px;
+  background: var(--accent); pointer-events: none;
+}
+.compass-ribbon-pointer::before {
+  content: ""; position: absolute; top: -1px; left: 50%; transform: translateX(-50%);
+  border-left: 5px solid transparent; border-right: 5px solid transparent;
+  border-top: 6px solid var(--accent);
+}
+
+#compass-heading-readout {
+  position: absolute; left: 0; right: 0; bottom: 3px; text-align: center;
+  font-size: 11px; font-weight: 700; color: var(--accent);
+  font-variant-numeric: tabular-nums; letter-spacing: 0.6px;
+}
+
+/* Only shown while the sensor itself reports low confidence - not a
+   permanent control, so it costs no space in the normal case. */
+#compass-calibrate-warn {
+  position: absolute; right: 5px; top: 5px;
+  color: var(--danger); pointer-events: none; /* the whole ribbon is the tap target */
+  display: flex; align-items: center; justify-content: center;
+}
+#compass-calibrate-warn svg { width: 13px; height: 13px; }
+#compass-calibrate-warn.hidden { display: none; }
+
+.beta-badge {
+  display: inline-block; margin-left: 6px; padding: 1px 6px;
+  border-radius: 999px; background: var(--accent-soft); color: var(--accent);
+  font-size: 9px; font-weight: 700; letter-spacing: 0.6px; vertical-align: middle;
+}
 .result-item {
   padding: 12px 14px; font-size: 13px; border-bottom: 1px solid var(--border-soft); cursor: pointer;
 }
@@ -144,11 +271,90 @@ html, body {
   width: 14px; height: 14px; border-radius: 3px; flex-shrink: 0; display: inline-block;
 }
 
+/* Overlaid dual scale bar instead of two stacked rows: both units share
+   one visual baseline down the middle of a fixed-height container, with
+   Leaflet's own metric-then-imperial DOM order (confirmed in leaflet.js's
+   _addScales) used to tell them apart via :first-child/:last-child - no
+   extra markup needed since Leaflet always builds it in that order.
+   Metric (first) sits in the top half, its box's bottom border landing
+   exactly on the shared middle line so its ticks point up and its label
+   sits above. Imperial (last) mirrors that in the bottom half: its box's
+   top border lands on that same middle line, ticks pointing down, label
+   below. Same minimal line-only look as before (no fill, halo shadow for
+   legibility over any basemap), just two of them overlaid instead of
+   stacked as separate rows. */
 .leaflet-control-scale-line {
-  background: rgba(23, 29, 38, 0.85) !important;
-  border-color: var(--text-muted) !important;
-  color: var(--text) !important;
+  position: absolute;
+  left: 0;
+  background: transparent !important;
+  color: #1c2128 !important;
   font-size: 11px !important;
+  font-weight: 600;
+  white-space: nowrap;
+  box-sizing: border-box;
+  filter: drop-shadow(0 0 2px rgba(255,255,255,0.85)) drop-shadow(0 0 2px rgba(255,255,255,0.85));
+}
+.leaflet-control-scale-line:first-child {
+  /* metric - ticks/label above the shared middle line. Anchored via top
+     (not bottom) specifically so both halves share the same positioning
+     basis - mixing top- and bottom-anchored positioning on a shared
+     border line is what was causing a 1px sub-pixel rounding mismatch
+     between the two, instead of them landing on the exact same line. */
+  top: 0;
+  height: 17px;
+  border: none !important;
+  border-bottom: 1.5px solid #1c2128 !important;
+  border-left: 1.5px solid #1c2128 !important;
+  border-right: 1.5px solid #1c2128 !important;
+  padding: 0 4px 2px !important;
+}
+.leaflet-control-scale-line:last-child {
+  /* imperial - ticks/label below the shared middle line */
+  top: 17px;
+  height: 17px;
+  border: none !important;
+  border-top: 1.5px solid #1c2128 !important;
+  border-left: 1.5px solid #1c2128 !important;
+  border-right: 1.5px solid #1c2128 !important;
+  padding: 2px 4px 0 !important;
+}
+
+/* Leaflet's own default sits the scale bar only 5px from the very bottom
+   edge, the same vertical band the attribution/credits control occupies
+   on the opposite corner - on a narrow phone screen that credits text
+   (long, since it lists every map data source) is wide enough to visually
+   run under/over the scale bar. Lifting it clear of that band, and making
+   it safe-area-aware like every other floating element in this app (the
+   default Leaflet margin isn't). */
+.leaflet-control-scale {
+  position: relative;
+  height: 34px;
+  margin-bottom: calc(30px + var(--safe-bottom)) !important;
+}
+
+/* ===== Retheme Leaflet's default popup - used for the route/track map
+   bubbles - to match the app's dark surface. Untouched, this is stock
+   Leaflet: white box, black text, generic grey close X. ===== */
+.leaflet-popup-content-wrapper,
+.leaflet-popup-tip {
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow-elevated);
+}
+.leaflet-popup-content-wrapper {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+.leaflet-popup-content {
+  font-size: 13px;
+  line-height: 1.5;
+}
+.leaflet-container a.leaflet-popup-close-button {
+  color: var(--text-muted);
+}
+.leaflet-container a.leaflet-popup-close-button:hover,
+.leaflet-container a.leaflet-popup-close-button:focus {
+  color: var(--text);
 }
 
 /* Leaflet applies a fade-in CSS transition to tiles by default (meant for
@@ -167,9 +373,19 @@ html, body {
    itself, bottom-left, stacked in one container so multiple never overlap,
    each individually collapsible ===== */
 #map-overlays-stack {
-  position: absolute; left: 12px; bottom: calc(46px + var(--safe-bottom)); z-index: 470;
+  /* bottom offset raised in step with .leaflet-control-scale below, so
+     legends/radar controls keep clearing the scale bar's position with
+     the same margin as before, rather than starting to overlap it */
+  position: absolute; left: 12px; bottom: calc(75px + var(--safe-bottom)); z-index: 470;
   display: flex; flex-direction: column-reverse; gap: 8px; /* column-reverse: first-added stays closest to its natural bottom slot */
   max-width: 210px;
+  transition: bottom 0.2s ease;
+}
+/* When the scale bar is hidden (Settings), drop the whole stack down to
+   reclaim the space that was reserved to clear it, instead of leaving
+   that gap sitting empty under the legends. */
+#map-overlays-stack.scale-bar-hidden {
+  bottom: calc(50px + var(--safe-bottom));
 }
 .map-overlay {
   background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md);
@@ -344,7 +560,7 @@ input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--accent);
 
 /* ===== Status pills (route planning / recording - replace old top/bottom banners) ===== */
 .status-pill {
-  position: absolute; left: 50%; top: calc(64px + var(--safe-top)); z-index: 480;
+  position: absolute; left: 50%; top: calc(64px + var(--safe-top) + var(--top-row-h)); z-index: 480;
   transform: translateX(-50%);
   display: flex; align-items: center; gap: 10px;
   background: var(--surface); border: 1px solid var(--border); border-radius: 999px;

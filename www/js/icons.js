@@ -70,7 +70,11 @@ export const ICONS = {
 
   flagPointFlag: `<svg viewBox="0 0 24 24"><path d="M6 2v20" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/><path d="M6 3 19 8l-13 5Z" fill="currentColor"/></svg>`,
 
-  flagPointTent: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4 3 20h18Z"/><path d="M12 4v16"/><path d="M8.5 13.5 12 20l3.5-6.5"/></svg>`
+  flagPointTent: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 2 20h20Z"/><path d="M9.5 20 12 8l2.5 12"/></svg>`,
+
+  refresh: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 3v6h-6"/></svg>`,
+
+  sync: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10"/><path d="M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>`
 };
 
 // Every selectable flag "type" for the flag-mode icon picker, mapping to

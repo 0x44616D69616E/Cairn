@@ -1,21 +1,34 @@
 // compassHeading.js
 //
-// The GPS marker's previous heading source was `position.coords.heading`,
-// which is course-over-ground computed from movement between GPS fixes.
-// That has two real problems: it requires you to actually be moving to
-// produce a value at all, and it only updates as fast as GPS fixes arrive
-// (seconds apart) - which reads as "laggy" compared to how fast you can
-// turn a phone in your hand.
+// Two heading sources, tried in order:
 //
-// This module instead reads the device's actual magnetometer/orientation
-// sensor directly via deviceorientation events, which fire at a much
-// higher rate (tens of times per second) and work whether you're standing
-// still or moving. This is the same sensor category a real compass app
-// uses, and the same one leaflet-rotate's own CompassBearing handler taps
-// into internally.
+// 1. CompassSensorPlugin (native) - Android's TYPE_ROTATION_VECTOR sensor
+//    (accel+gyro+magnetometer, fused and drift-corrected at the OS level),
+//    true-north-corrected via GeomagneticField, lightly smoothed. Needs a
+//    rebuild to exist at all (see scripts/ensure-compass-plugin.js) - on
+//    a build from before that, or in a browser/dev environment, it just
+//    won't be present, and this module quietly falls through to:
+//
+// 2. deviceorientation/deviceorientationabsolute (web) - magnetic heading
+//    only (no true-north correction, since that needs the World Magnetic
+//    Model, which isn't something to reimplement in JS), no smoothing,
+//    and on some Android/WebView combinations may silently be the weaker
+//    "relative" flavor instead of the properly north-referenced
+//    "absolute" one. Kept as a fallback so the app still has *a* compass
+//    even on a build that hasn't picked up the native plugin yet.
 
 let onHeadingCallback = null;
+let onAccuracyCallback = null;
 let listening = false;
+let nativePluginHandle = null;
+
+let CapCompass = null;
+try {
+  // eslint-disable-next-line no-undef
+  CapCompass = Capacitor?.Plugins?.CompassSensor || null;
+} catch (e) {
+  CapCompass = null;
+}
 
 function handleOrientation(event) {
   let heading;
@@ -38,15 +51,41 @@ function handleOrientation(event) {
   if (onHeadingCallback) onHeadingCallback(heading);
 }
 
-export function startListening(onHeading) {
+// `onAccuracy` is optional and only ever fires from the native plugin -
+// the web fallback has no equivalent signal, so it's simply never called
+// in that case rather than faked.
+//
+// Genuinely async (unlike the old version) because whether the native
+// plugin is actually usable can only be known after an async isAvailable()
+// check - returning a guessed answer synchronously and correcting it
+// later would mean the "which mode is active" log line in app.js could
+// end up flatly wrong for a moment, which isn't worth the tradeoff.
+export async function startListening(onHeading, onAccuracy) {
   onHeadingCallback = onHeading;
-  if (listening) return;
+  onAccuracyCallback = onAccuracy || null;
+  if (listening) return listening;
 
-  // Prefer the "absolute" event (referenced to true/magnetic north) where
-  // available; fall back to plain deviceorientation otherwise. Both are
-  // supported without any special permission prompt on Android - the
-  // permission-prompt requirement (DeviceOrientationEvent.requestPermission)
-  // is an iOS 13+ thing, harmless to skip on Android.
+  if (CapCompass) {
+    try {
+      const res = await CapCompass.isAvailable();
+      if (res.available) {
+        nativePluginHandle = await CapCompass.addListener('headingUpdate', (data) => {
+          if (onHeadingCallback) onHeadingCallback(data.heading);
+          if (onAccuracyCallback) onAccuracyCallback(data.accuracy);
+        });
+        await CapCompass.start();
+        listening = 'native';
+        return listening;
+      }
+    } catch (e) {
+      // fall through to the web listener below
+    }
+  }
+
+  return startWebListening();
+}
+
+function startWebListening() {
   if ('ondeviceorientationabsolute' in window) {
     window.addEventListener('deviceorientationabsolute', handleOrientation, true);
     listening = 'absolute';
@@ -56,12 +95,23 @@ export function startListening(onHeading) {
   } else {
     listening = false;
   }
-
   return listening;
 }
 
-export function stopListening() {
-  if (listening === 'absolute') {
+// Feeds a GPS fix through to the native plugin for its true-north
+// (declination) correction - a no-op on the web fallback, which doesn't
+// do that correction at all. Safe to call on every GPS update; cheap.
+export function updateLocation(lat, lng, altitude) {
+  if (CapCompass) {
+    CapCompass.updateLocation({ latitude: lat, longitude: lng, altitude: altitude || 0 });
+  }
+}
+
+export async function stopListening() {
+  if (listening === 'native') {
+    if (CapCompass) await CapCompass.stop();
+    if (nativePluginHandle) { await nativePluginHandle.remove(); nativePluginHandle = null; }
+  } else if (listening === 'absolute') {
     window.removeEventListener('deviceorientationabsolute', handleOrientation, true);
   } else if (listening === 'relative') {
     window.removeEventListener('deviceorientation', handleOrientation, true);

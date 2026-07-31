@@ -18,10 +18,56 @@
   <input id="search-input" type="text" placeholder="Search any place, address, or lat,lng" />
   <button id="btn-settings" class="icon-btn" data-icon="settings" title="Settings"></button>
 </div>
-<div id="status-chip">
-  <span id="gps-status">GPS searching…</span>
+<button id="status-chip" data-popover-trigger title="GPS status">
+  <span id="gps-dot" class="gps-dot hidden"></span>
+  <span id="gps-spinner" class="gps-spinner" data-icon="sync"></span>
+  <span id="gps-status">GPS</span>
+</button>
+
+<!-- GPS detail popover - opened by tapping the GPS chip. The chip itself
+     is deliberately just a dot: the numbers that actually tell you
+     whether to trust the position live in here. -->
+<div id="popover-gps" class="popover hidden">
+  <div class="popover-row"><span class="popover-label">Status</span><span id="gps-popover-status">Searching</span></div>
+  <div class="popover-row"><span class="popover-label">Accuracy</span><span id="gps-popover-accuracy">&mdash;</span></div>
+  <div class="popover-row"><span class="popover-label">Position</span><span id="gps-popover-coords">&mdash;</span></div>
+  <div class="popover-row"><span class="popover-label">Updated</span><span id="gps-popover-age">&mdash;</span></div>
+  <button id="btn-gps-resync" class="btn-secondary full-width">Resync GPS</button>
 </div>
+
+<!-- North calibration popover - opened by tapping the compass ribbon. -->
+<div id="popover-compass" class="popover hidden">
+  <p class="hint popover-warning hidden" id="compass-popover-warning">The sensor is reporting low confidence. Hold the phone clear of metal and magnets and move it in a figure-8 a few times.</p>
+  <p class="hint" id="north-offset-status"></p>
+  <div class="button-row">
+    <button id="btn-set-north" class="btn-secondary">Set north</button>
+    <button id="btn-reset-north" class="btn-secondary">Reset</button>
+  </div>
+  <p class="hint">Point the top of your phone at north, then tap <strong>Set north</strong>. The ribbon keeps tracking live from the sensors either way - this only corrects which direction it calls north.</p>
+</div>
+
 <div id="search-results" class="hidden"></div>
+
+<!-- Compass ribbon: rotates with the real device compass sensor (not map
+     rotation), showing whichever heading you're currently facing centered
+     under the fixed pointer. Sits a row below the search bar/status chip
+     band so it never competes with the search results dropdown. -->
+<!-- Compass ribbon: driven by the real device compass sensor (not map
+     rotation). Sits directly below the search bar; the GPS chip and the
+     flag/route/record pills shift down to clear it when it's on, and take
+     that row back when it's off, so nothing is left as dead space (see
+     the --top-row-h variable in style.css).
+     The window/track split exists so the edge fade mask applies only to
+     the scrolling ticks - the pointer, readout and calibration warning
+     stay crisp instead of dissolving at the edges too. -->
+<div id="compass-ribbon" class="hidden" data-popover-trigger>
+  <div id="compass-ribbon-window">
+    <div id="compass-ribbon-track"></div>
+  </div>
+  <div class="compass-ribbon-pointer"></div>
+  <div id="compass-heading-readout">---&deg;</div>
+  <span id="compass-calibrate-warn" class="hidden" data-icon="refresh"></span>
+</div>
 
 <!-- Floating action buttons - all collapsed behind a single menu toggle -->
 <div id="fab-stack">
@@ -135,11 +181,59 @@
   </div>
 </div>
 
+<!-- Route details sheet - opened via "More" on a route's map popup -->
+<div id="sheet-route-details" class="sheet hidden">
+  <div class="sheet-handle"></div>
+  <div class="sheet-header"><h2 id="route-details-name">Route</h2><button class="icon-btn sheet-close" data-target="sheet-route-details" data-icon="close"></button></div>
+  <div class="sheet-body">
+    <p class="hint" id="route-details-total"></p>
+    <div class="button-row">
+      <button id="btn-route-details-rename" class="btn-secondary">Rename</button>
+      <button id="btn-route-details-delete" class="btn-danger">Delete</button>
+    </div>
+    <h3>Segments</h3>
+    <ul id="route-details-segments" class="data-list"></ul>
+  </div>
+</div>
+
 <!-- Settings sheet -->
 <div id="sheet-settings" class="sheet hidden">
   <div class="sheet-handle"></div>
   <div class="sheet-header"><h2>Settings</h2><button class="icon-btn sheet-close" data-target="sheet-settings" data-icon="close"></button></div>
   <div class="sheet-body">
+    <div class="toggle-row">
+      <div>
+        <div class="toggle-title">Metric units</div>
+        <div class="hint">Routes, tracks, and distances throughout the app show in km/m instead of mi/ft. The scale bar always shows both regardless of this setting.</div>
+      </div>
+      <label class="switch">
+        <input type="checkbox" id="toggle-metric-units" />
+        <span class="switch-track"></span>
+      </label>
+    </div>
+
+    <div class="toggle-row">
+      <div>
+        <div class="toggle-title">Show compass <span class="beta-badge">BETA</span></div>
+        <div class="hint">Heading ribbon below the search bar, driven by the device's compass sensor. Off by default while it's still being refined.</div>
+      </div>
+      <label class="switch">
+        <input type="checkbox" id="toggle-show-compass" />
+        <span class="switch-track"></span>
+      </label>
+    </div>
+
+    <div class="toggle-row">
+      <div>
+        <div class="toggle-title">Hide scale bar</div>
+        <div class="hint">The route tool already measures distance precisely, so this is optional - on by default as a quick visual reference.</div>
+      </div>
+      <label class="switch">
+        <input type="checkbox" id="toggle-hide-scale-bar" />
+        <span class="switch-track"></span>
+      </label>
+    </div>
+
     <div class="toggle-row">
       <div>
         <div class="toggle-title">Debug mode</div>
@@ -165,6 +259,7 @@
     </div>
 
     <p class="hint" style="margin-top:18px; border-top:1px solid var(--border-soft); padding-top:14px;">
+      Cairn is developed by 0x44616D69616E.<br>
       App icon: "Cairn" from the Temaki icon set by Bryan Housel, CC0 license.
     </p>
   </div>
@@ -192,10 +287,33 @@
   <h2>Choose a folder</h2>
   <p class="hint" style="font-size:14.5px; color: var(--text);">Cairn will create a "Cairn" folder inside whichever one you pick.</p>
   <div class="dialog-actions">
+    <button id="btn-folder-browse" class="btn-primary full-width">Browse for folder…</button>
+  </div>
+  <div class="dialog-actions">
     <button id="btn-folder-documents" class="btn-secondary full-width">Documents</button>
   </div>
   <div class="dialog-actions">
     <button id="btn-folder-downloads" class="btn-secondary full-width">Downloads</button>
+  </div>
+</div>
+
+<!-- Real folder browser - lists actual subfolders under external storage,
+     requires "All files access" (Android 11+ special permission, granted
+     via a system Settings screen since there's no normal runtime dialog
+     for it). Falls back to the Documents/Downloads dialog above if that
+     permission isn't granted or the plugin isn't available. -->
+<div id="sheet-folder-browser" class="sheet hidden">
+  <div class="sheet-handle"></div>
+  <div class="sheet-header"><h2 id="folder-browser-path">Storage</h2><button class="icon-btn sheet-close" data-target="sheet-folder-browser" data-icon="close"></button></div>
+  <div class="sheet-body">
+    <div class="button-row">
+      <button id="btn-folder-browser-up" class="btn-secondary">↑ Up a level</button>
+    </div>
+    <ul id="folder-browser-list" class="data-list"></ul>
+    <p class="hint">Data will be saved to:<br><strong id="folder-browser-destination" style="color: var(--text); font-size: 13.5px; word-break: break-all;"></strong></p>
+    <div class="button-row">
+      <button id="btn-folder-browser-select" class="btn-primary full-width">Select this folder</button>
+    </div>
   </div>
 </div>
 
@@ -291,7 +409,7 @@
     </div>
   </div>
 
-  <div id="map-overlay-blm" class="map-overlay hidden">
+  <div id="map-overlay-blm" class="map-overlay hidden collapsed">
     <div class="map-overlay-header" data-target="map-overlay-blm">
       <span>Public Land Ownership</span>
       <span class="chevron" data-icon="chevronDown"></span>

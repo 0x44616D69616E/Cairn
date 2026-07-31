@@ -19,24 +19,63 @@
 import * as Store from './dataStore.js';
 
 let CapFilesystem = null;
+let CapAllFilesAccess = null;
 try {
   // eslint-disable-next-line no-undef
   CapFilesystem = Capacitor?.Plugins?.Filesystem || null;
+  // eslint-disable-next-line no-undef
+  CapAllFilesAccess = Capacitor?.Plugins?.AllFilesAccess || null;
 } catch (e) {
   CapFilesystem = null;
+  CapAllFilesAccess = null;
 }
 
-const STORAGE_DIR = 'Cairn'; // subfolder created under whichever directory the user picks
+export const STORAGE_DIR = 'Cairn'; // subfolder created under wherever the user picks
 
 export function isFilesystemAvailable() {
   return !!CapFilesystem;
 }
 
-export async function setupStorage(directory) {
+// ---------- All Files Access (needed only for the real folder browser -
+// the Documents/Downloads choice below works without it) ----------
+export function isAllFilesAccessPluginAvailable() {
+  return !!CapAllFilesAccess;
+}
+
+export async function isAllFilesAccessGranted() {
+  if (!CapAllFilesAccess) return false;
+  const res = await CapAllFilesAccess.isGranted();
+  return !!res.granted;
+}
+
+export async function requestAllFilesAccess() {
+  if (!CapAllFilesAccess) throw new Error('AllFilesAccess plugin not available - run "npm run fix-manifest" and rebuild.');
+  await CapAllFilesAccess.requestAccess(); // sends the user to a system Settings screen; resolves immediately, doesn't wait for their choice
+}
+
+// ---------- Real folder browsing, once All Files Access is granted -
+// lists real subfolders under the external storage root. ----------
+export async function listFolders(relativePath) {
+  if (!CapFilesystem) throw new Error('Filesystem access is not available in this environment.');
+  const res = await CapFilesystem.readdir({ path: relativePath, directory: 'EXTERNAL_STORAGE' });
+  return res.files.filter(f => f.type === 'directory').map(f => f.name).sort((a, b) => a.localeCompare(b));
+}
+
+// ---------- Storage location setup and backup export/import ----------
+// `relativePath` is the folder the user browsed to and picked (relative to
+// the external storage root) - '' means the storage root itself. Kept
+// optional so the older Documents/Downloads dialog (which only ever
+// passes a `directory` constant, no sub-path) still works unchanged.
+function backupDir(relativePath) {
+  return relativePath ? `${relativePath}/${STORAGE_DIR}` : STORAGE_DIR;
+}
+
+export async function setupStorage(directory, relativePath = '') {
   if (!CapFilesystem) throw new Error('Filesystem access is not available in this environment.');
   await CapFilesystem.requestPermissions();
+  const dir = backupDir(relativePath);
   try {
-    await CapFilesystem.mkdir({ path: STORAGE_DIR, directory, recursive: true });
+    await CapFilesystem.mkdir({ path: dir, directory, recursive: true });
   } catch (e) {
     // mkdir throws if the folder already exists - that's fine, not a real error.
     if (!/exist/i.test(e.message || '')) throw e;
@@ -45,18 +84,23 @@ export async function setupStorage(directory) {
   // confirm access against, and so the user can see the folder is real by
   // browsing to it themselves.
   await CapFilesystem.writeFile({
-    path: `${STORAGE_DIR}/README.txt`,
+    path: `${dir}/README.txt`,
     data: 'This folder holds Cairn app data backups (flags, routes, tracks, sessions, layer presets, settings).\nMap tiles are not stored here - they stay cached on the device and can always be re-downloaded from Settings.',
     directory,
     encoding: 'utf8'
   });
   localStorage.setItem('storageConfigured', 'true');
   localStorage.setItem('storageDirectory', directory);
+  localStorage.setItem('storageRelativePath', relativePath);
   return true;
 }
 
 export function getConfiguredDirectory() {
   return localStorage.getItem('storageDirectory') || 'DOCUMENTS';
+}
+
+export function getConfiguredRelativePath() {
+  return localStorage.getItem('storageRelativePath') || '';
 }
 
 export function isStorageConfigured() {
@@ -82,7 +126,7 @@ export async function exportAllData() {
   const data = await gatherAllData();
   const filename = `cairn-backup-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
   await CapFilesystem.writeFile({
-    path: `${STORAGE_DIR}/${filename}`,
+    path: `${backupDir(getConfiguredRelativePath())}/${filename}`,
     data: JSON.stringify(data, null, 2),
     directory: getConfiguredDirectory(),
     encoding: 'utf8'
@@ -93,7 +137,7 @@ export async function exportAllData() {
 export async function importAllData(filename) {
   if (!CapFilesystem) throw new Error('Filesystem access is not available in this environment.');
   const res = await CapFilesystem.readFile({
-    path: `${STORAGE_DIR}/${filename}`,
+    path: `${backupDir(getConfiguredRelativePath())}/${filename}`,
     directory: getConfiguredDirectory(),
     encoding: 'utf8'
   });
@@ -117,7 +161,7 @@ export async function importAllData(filename) {
 export async function listBackupFiles() {
   if (!CapFilesystem) return [];
   try {
-    const res = await CapFilesystem.readdir({ path: STORAGE_DIR, directory: getConfiguredDirectory() });
+    const res = await CapFilesystem.readdir({ path: backupDir(getConfiguredRelativePath()), directory: getConfiguredDirectory() });
     return res.files.map(f => f.name).filter(n => n.endsWith('.json')).sort().reverse();
   } catch (e) {
     return [];

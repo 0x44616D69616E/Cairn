@@ -118,17 +118,93 @@ function askStorageFolder() {
     openOverlay('dialog-storage-folder');
     const docsBtn = document.getElementById('btn-folder-documents');
     const dlBtn = document.getElementById('btn-folder-downloads');
-    const cleanup = () => { docsBtn.onclick = null; dlBtn.onclick = null; closeOverlay('dialog-storage-folder'); };
-    docsBtn.onclick = () => { cleanup(); resolve('DOCUMENTS'); };
-    dlBtn.onclick = () => { cleanup(); resolve('EXTERNAL_STORAGE'); };
+    const browseBtn = document.getElementById('btn-folder-browse');
+    const cleanup = () => { docsBtn.onclick = null; dlBtn.onclick = null; browseBtn.onclick = null; closeOverlay('dialog-storage-folder'); };
+    docsBtn.onclick = () => { cleanup(); resolve({ directory: 'DOCUMENTS', relativePath: '', label: 'Documents/Cairn' }); };
+    dlBtn.onclick = () => { cleanup(); resolve({ directory: 'EXTERNAL_STORAGE', relativePath: '', label: 'Downloads/Cairn' }); };
+    browseBtn.onclick = async () => { cleanup(); resolve(await browseForFolder()); };
+  });
+}
+
+// Real folder browsing - requires Android's "All files access" special
+// permission, which (unlike a normal runtime permission) can only be
+// granted through a system Settings screen, not an in-app dialog. If
+// it's not granted yet, this sends the user there and asks them to tap
+// Browse again afterward - Android gives no callback for when they
+// return, so there's no way to auto-resume exactly where they left off.
+async function browseForFolder() {
+  if (!Storage.isAllFilesAccessPluginAvailable()) {
+    logError('Folder browsing needs a rebuild first - run "npm run fix-manifest" then rebuild the APK.');
+    return null;
+  }
+  const granted = await Storage.isAllFilesAccessGranted();
+  if (!granted) {
+    const ok = await askConfirm(
+      'Allow file access?',
+      'Browsing for a folder needs "All files access." The next screen is Android\'s own settings page - turn on the toggle for Cairn, then come back here and tap Browse again.'
+    );
+    if (ok) await Storage.requestAllFilesAccess();
+    return null;
+  }
+
+  return new Promise((resolve) => {
+    let currentPath = '';
+    const pathEl = document.getElementById('folder-browser-path');
+    const destEl = document.getElementById('folder-browser-destination');
+    const listEl = document.getElementById('folder-browser-list');
+    const upBtn = document.getElementById('btn-folder-browser-up');
+    const selectBtn = document.getElementById('btn-folder-browser-select');
+    const closeBtn = document.querySelector('.sheet-close[data-target="sheet-folder-browser"]');
+
+    async function render() {
+      pathEl.textContent = currentPath || 'Storage root';
+      destEl.textContent = `${currentPath ? currentPath + '/' : ''}${Storage.STORAGE_DIR}`;
+      upBtn.disabled = !currentPath;
+      listEl.innerHTML = '<li><span>Loading…</span></li>';
+      let folders = [];
+      try {
+        folders = await Storage.listFolders(currentPath);
+      } catch (e) {
+        logError(`Couldn't read that folder: ${e.message}`);
+      }
+      listEl.innerHTML = '';
+      if (!folders.length) {
+        const li = document.createElement('li');
+        li.innerHTML = '<span><small>No subfolders here</small></span>';
+        listEl.appendChild(li);
+      }
+      folders.forEach((name) => {
+        const li = document.createElement('li');
+        li.innerHTML = `<span>📁 ${name}</span>`;
+        li.onclick = () => { currentPath = currentPath ? `${currentPath}/${name}` : name; render(); };
+        listEl.appendChild(li);
+      });
+    }
+
+    upBtn.onclick = () => {
+      if (!currentPath) return;
+      currentPath = currentPath.includes('/') ? currentPath.slice(0, currentPath.lastIndexOf('/')) : '';
+      render();
+    };
+    selectBtn.onclick = () => {
+      closeOverlay('sheet-folder-browser');
+      resolve({ directory: 'EXTERNAL_STORAGE', relativePath: currentPath, label: `${currentPath || 'Storage'}/Cairn` });
+    };
+    // Backing out via the sheet's own X should resolve null, same as
+    // cancelling the Documents/Downloads dialog does.
+    closeBtn.onclick = () => { closeOverlay('sheet-folder-browser'); resolve(null); };
+
+    openOverlay('sheet-folder-browser');
+    render();
   });
 }
 
 document.getElementById('btn-setup-storage').onclick = async () => {
-  const directory = await askStorageFolder();
+  const picked = await askStorageFolder();
+  if (!picked) return; // cancelled
   try {
-    await Storage.setupStorage(directory);
-    logInfo(`Storage set up at ${directory === 'DOCUMENTS' ? 'Documents' : 'Downloads'}/Cairn.`);
+    await Storage.setupStorage(picked.directory, picked.relativePath);
+    logInfo(`Storage set up at ${picked.label}.`);
     refreshStorageUI();
   } catch (e) {
     logError(`Failed to set up storage: ${e.message}`);
@@ -163,10 +239,11 @@ document.getElementById('btn-onboarding-offline-ok').onclick = () => {
 document.getElementById('btn-onboarding-storage-later').onclick = () => closeOverlay('dialog-onboarding-storage');
 document.getElementById('btn-onboarding-storage-setup').onclick = async () => {
   closeOverlay('dialog-onboarding-storage');
-  const directory = await askStorageFolder();
+  const picked = await askStorageFolder();
+  if (!picked) return; // cancelled
   try {
-    await Storage.setupStorage(directory);
-    logInfo(`Storage set up at ${directory === 'DOCUMENTS' ? 'Documents' : 'Downloads'}/Cairn.`);
+    await Storage.setupStorage(picked.directory, picked.relativePath);
+    logInfo(`Storage set up at ${picked.label}.`);
     refreshStorageUI();
   } catch (e) {
     logError(`Failed to set up storage: ${e.message}`);
@@ -209,7 +286,46 @@ const map = L.map('map', {
   rotateControl: false
 }).setView([20, 0], 2);
 
-L.control.scale({ position: 'bottomleft', imperial: true, metric: true }).addTo(map);
+// Both units shown at once - unlike the route/track distance displays
+// elsewhere, two stacked lines here isn't clutter, and there's no reason
+// to force a choice for a glanceable reference like this one.
+const scaleControl = L.control.scale({ position: 'bottomleft', imperial: true, metric: true }).addTo(map);
+
+// On by default now - the route tool measures distance precisely, but a
+// glanceable reference is still generally useful. Toggled from Settings
+// ("Hide scale bar"). When hidden, the legend/radar overlay stack drops
+// down to reclaim the space it was leaving clear above the scale bar,
+// rather than leaving that gap empty.
+let scaleBarHidden = localStorage.getItem('hideScaleBar') === 'true';
+function applyScaleBarVisibility() {
+  scaleControl.getContainer().style.display = scaleBarHidden ? 'none' : '';
+  document.getElementById('map-overlays-stack').classList.toggle('scale-bar-hidden', scaleBarHidden);
+}
+applyScaleBarVisibility();
+
+const hideScaleBarToggle = document.getElementById('toggle-hide-scale-bar');
+hideScaleBarToggle.checked = scaleBarHidden;
+hideScaleBarToggle.addEventListener('change', () => {
+  scaleBarHidden = hideScaleBarToggle.checked;
+  localStorage.setItem('hideScaleBar', scaleBarHidden ? 'true' : 'false');
+  applyScaleBarVisibility();
+});
+
+// Unit system for every distance readout EXCEPT the scale bar above (which
+// always shows both) - route/track popups, the route details sheet, the
+// live route-planning pill, live track recording stats, and the saved
+// routes list. Off by default (miles/feet), matching this app's other
+// US-centric data sources (BLM land, US state boundaries).
+let useMetric = localStorage.getItem('useMetricUnits') === 'true';
+const metricToggle = document.getElementById('toggle-metric-units');
+metricToggle.checked = useMetric;
+metricToggle.addEventListener('change', async () => {
+  useMetric = metricToggle.checked;
+  localStorage.setItem('useMetricUnits', useMetric ? 'true' : 'false');
+  await redrawAllDataFromStore(); // refreshes every saved route/track popup
+  renderDataPanel(); // refreshes the saved routes list text
+  if (planningRoute) updateRouteLine(); // refreshes the live pill/popup if mid-plan
+});
 
 let hasCenteredOnFirstFix = false;
 
@@ -270,18 +386,28 @@ let radarPlayTimer = null;
 let radarLayers = []; // one tile layer per frame, index-aligned with radarFrameList.frames
 let radarLayersBuilt = false;
 let radarLayersFullyLoaded = false; // true only once every layer has actually finished loading its tiles
+let radarLoadError = null; // set when a load attempt fails, so the UI can show *something* instead of a stuck "Loading…"
 
 let radarFrameListPromise = null;
 
 async function ensureRadarFrameList() {
   if (radarFrameList) return radarFrameList;
   if (!radarFrameListPromise) {
-    radarFrameListPromise = Radar.getFrameList().then((list) => {
-      radarFrameList = list;
-      const pastCount = list.frames.filter(f => !f.isForecast).length;
-      radarFrameIndex = Math.max(0, pastCount - 1);
-      return list;
-    });
+    radarFrameListPromise = Radar.getFrameList()
+      .then((list) => {
+        radarFrameList = list;
+        const pastCount = list.frames.filter(f => !f.isForecast).length;
+        radarFrameIndex = Math.max(0, pastCount - 1);
+        return list;
+      })
+      .catch((err) => {
+        // Don't let one failed attempt (a momentary network blip, RainViewer
+        // hiccup, etc.) permanently poison every future try - clearing this
+        // back to null means the next toggle-on actually attempts a fresh
+        // fetch instead of instantly re-failing on the same dead promise.
+        radarFrameListPromise = null;
+        throw err;
+      });
   }
   return radarFrameListPromise;
 }
@@ -302,6 +428,14 @@ async function getOrBuildLeafletLayer(id) {
         Radar.buildRadarLayer(L, radarFrameList.host, frame, i === radarFrameIndex ? opacity : 0)
       );
       radarLayersBuilt = true;
+      // Attach every frame right away, not just the currently-selected
+      // one - attaching a layer to the map is what makes Leaflet start
+      // fetching its tiles at all. Without this, every hidden frame
+      // never actually began loading in the background, so the "wait
+      // for all frames" check below had nothing real to wait for and
+      // falsely reported them done instantly - meaning most frames were
+      // still genuinely blank whenever playback actually reached them.
+      radarLayers.forEach((rl) => { if (!map.hasLayer(rl)) rl.addTo(map); });
     }
     layer = radarLayers[radarFrameIndex];
   } else if (source.isCloudSatellite) {
@@ -337,7 +471,16 @@ async function waitForAllRadarLayersLoaded() {
     let done = false;
     const finish = () => { if (!done) { done = true; resolve(); } };
     layer.once('load', finish);
-    setTimeout(finish, 4000); // don't let one hung tile block the rest forever
+    // 15s, not 4s: all ~13 frames now load in parallel, which means
+    // 100+ tile requests funneling through the browser's ~6-connections-
+    // per-host limit. On mobile data that legitimately takes longer than
+    // 4s, and since these timers all start together, a short timeout
+    // fired for most layers and declared them "loaded" while their tiles
+    // were still in flight - which is exactly the lie that let playback
+    // start cycling through frames that were still blank. This is only a
+    // safety valve against a genuinely hung tile; the normal path is the
+    // 'load' event above, which fires as soon as a frame is really ready.
+    setTimeout(finish, 15000);
     // Give Leaflet a tick to actually start loading before trusting
     // `_loading` as a signal that this layer has nothing to wait for.
     setTimeout(() => { if (!layer._loading) finish(); }, 50);
@@ -364,7 +507,15 @@ function setRadarFrame(index) {
 function updateRadarPlaybackUI() {
   const timeEl = document.getElementById('radar-frame-time');
   const playBtn = document.getElementById('btn-radar-play');
-  if (!timeEl || !radarFrameList) return;
+  if (!timeEl) return;
+  if (radarLoadError) {
+    timeEl.textContent = radarLoadError;
+    document.getElementById('btn-radar-play').classList.add('disabled');
+    document.getElementById('btn-radar-prev').classList.add('disabled');
+    document.getElementById('btn-radar-next').classList.add('disabled');
+    return;
+  }
+  if (!radarFrameList) return;
   if (!radarLayersFullyLoaded) {
     timeEl.textContent = 'Loading…';
     document.getElementById('btn-radar-play').classList.add('disabled');
@@ -419,19 +570,26 @@ async function applyLayerStack() {
       continue;
     }
     if (entry.on) {
-      if (layer.setOpacity) layer.setOpacity(entry.opacity);
-      else if (layer.eachLayer) layer.eachLayer(l => l.setStyle && l.setStyle({ opacity: entry.opacity }));
-      if (!map.hasLayer(layer)) layer.addTo(map);
-      // Radar keeps one hidden tile layer per frame so cycling never needs
-      // to touch the network/DOM again after the first load - all of them
-      // need to be attached to the map (even the hidden ones), not just
-      // the currently-visible one the generic system above knows about.
-      if (entry.id === 'weatherRadar' && radarLayersReady) {
-        radarLayers.forEach((rl) => { if (!map.hasLayer(rl)) rl.addTo(map); });
+      // Radar's frames show/hide via opacity (only the selected frame is
+      // ever non-zero), so the generic "apply the slider opacity to the
+      // layer" below must not run against radar - activeLeafletLayers
+      // points at whichever frame is currently selected, and blanket-
+      // setting it here fights setRadarFrame's opacity bookkeeping
+      // (and leaves every OTHER frame stuck at whatever opacity it had
+      // when the slider last moved while it happened to be selected).
+      if (entry.id === 'weatherRadar' && radarLayersBuilt) {
+        radarLayers.forEach((rl, i) => {
+          rl.setOpacity(i === radarFrameIndex ? entry.opacity : 0);
+          if (!map.hasLayer(rl)) rl.addTo(map);
+        });
+      } else {
+        if (layer.setOpacity) layer.setOpacity(entry.opacity);
+        else if (layer.eachLayer) layer.eachLayer(l => l.setStyle && l.setStyle({ opacity: entry.opacity }));
+        if (!map.hasLayer(layer)) layer.addTo(map);
       }
     } else if (map.hasLayer(layer)) {
       map.removeLayer(layer);
-      if (entry.id === 'weatherRadar' && radarLayersReady) {
+      if (entry.id === 'weatherRadar' && radarLayersBuilt) {
         radarLayers.forEach((rl) => { if (map.hasLayer(rl)) map.removeLayer(rl); });
       }
     }
@@ -442,6 +600,17 @@ async function applyLayerStack() {
   for (let i = layerStack.length - 1; i >= 0; i--) {
     const entry = layerStack[i];
     if (!entry.on) continue;
+    // Radar is many stacked frame layers, not one - ALL of them have to
+    // come forward at this stack position, not just the currently-selected
+    // frame that activeLeafletLayers.weatherRadar points at. Without this,
+    // every non-selected frame stayed at the bottom of the tile stack,
+    // buried under satellite/topo - its tiles loaded fine but were
+    // invisible, which is exactly what made playback look like most
+    // frames were blank.
+    if (entry.id === 'weatherRadar' && radarLayersBuilt) {
+      radarLayers.forEach((rl) => rl.bringToFront && rl.bringToFront());
+      continue;
+    }
     const layer = activeLeafletLayers[entry.id];
     if (!layer) continue;
     if (layer.bringToFront) layer.bringToFront();
@@ -455,9 +624,25 @@ let blmLegendCache = null;
 async function fetchBlmLegend() {
   if (blmLegendCache) return blmLegendCache;
   const url = 'https://gis.blm.gov/arcgis/rest/services/lands/BLM_Natl_SMA_Cached_with_PriUnk/MapServer/legend?f=pjson';
-  const res = await fetch(url);
-  if (!res.ok) throw new Error('BLM legend fetch failed');
-  const data = await res.json();
+
+  const attempt = async (n) => {
+    let res;
+    try {
+      res = await fetch(url);
+    } catch (networkErr) {
+      if (n === 0) { await new Promise(r => setTimeout(r, 700)); return attempt(1); }
+      throw networkErr;
+    }
+    if (!res.ok) {
+      if (n === 0 && (res.status >= 500 || res.status === 429)) {
+        await new Promise(r => setTimeout(r, 700));
+        return attempt(1);
+      }
+      throw new Error(`HTTP ${res.status} ${res.statusText || ''}`.trim());
+    }
+    return res.json();
+  };
+  const data = await attempt(0);
   // This service publishes the SAME categories twice: an "overview" tier
   // (minScale > 0, used when zoomed out) where every single category
   // shares one identical placeholder swatch image, and a "detail" tier
@@ -675,24 +860,29 @@ function setLayerOpacity(id, opacity) {
 // Legends are always shown at full opacity, independent of the layer's
 // own transparency slider - they're a reference key, not part of the map
 // imagery itself.
+async function attemptLoadRadar() {
+  radarLoadError = null; // clear any previous failure - this is a fresh attempt
+  updateRadarPlaybackUI(); // shows "Loading…" immediately if not ready yet
+  try {
+    await ensureRadarFrameList();
+    await getOrBuildLeafletLayer('weatherRadar'); // builds all frame layers if not already built
+    await applyLayerStack(); // attaches them to the map so their tiles actually start loading
+    if (!radarLayersFullyLoaded) await waitForAllRadarLayersLoaded();
+    else updateRadarPlaybackUI();
+  } catch (e) {
+    logError(`Failed to load radar frames: ${e.message}`);
+    radarLoadError = 'Couldn\'t load radar - tap to retry';
+    updateRadarPlaybackUI();
+  }
+}
+
 function updateMapOverlays() {
   const radarEntry = layerStack.find(l => l.id === 'weatherRadar');
   const radarOverlay = document.getElementById('map-overlay-radar');
   if (radarEntry && radarEntry.on) {
     radarOverlay.classList.remove('hidden');
     renderRadarLegend(document.getElementById('radar-legend'));
-    updateRadarPlaybackUI(); // shows "Loading…" immediately if not ready yet
-    (async () => {
-      try {
-        await ensureRadarFrameList();
-        await getOrBuildLeafletLayer('weatherRadar'); // builds all frame layers if not already built
-        await applyLayerStack(); // attaches them to the map so their tiles actually start loading
-        if (!radarLayersFullyLoaded) await waitForAllRadarLayersLoaded();
-        else updateRadarPlaybackUI();
-      } catch (e) {
-        logError(`Failed to load radar frames: ${e.message}`);
-      }
-    })();
+    attemptLoadRadar();
   } else {
     radarOverlay.classList.add('hidden');
   }
@@ -713,6 +903,7 @@ function updateMapOverlays() {
 document.getElementById('btn-radar-play').onclick = toggleRadarPlayback;
 document.getElementById('btn-radar-prev').onclick = () => { stopRadarPlaybackIfRunning(); setRadarFrame(radarFrameIndex - 1); };
 document.getElementById('btn-radar-next').onclick = () => { stopRadarPlaybackIfRunning(); setRadarFrame(radarFrameIndex + 1); };
+document.getElementById('radar-frame-time').onclick = () => { if (radarLoadError) attemptLoadRadar(); };
 
 document.querySelectorAll('.map-overlay-header').forEach((header) => {
   header.onclick = () => {
@@ -867,20 +1058,110 @@ const headingArrowIcon = L.divIcon({
   iconAnchor: [9, 14]
 });
 
+// currentHeadingRaw is straight off the sensor; currentHeadingDeg is what
+// everything else uses, and is the raw value plus any manual north
+// calibration offset. Keeping both means calibrating again later works
+// off the true sensor reading rather than compounding on itself.
+let compassNorthOffset = parseFloat(localStorage.getItem('compassNorthOffset') || '0') || 0;
+let currentHeadingRaw = 0;
 let currentHeadingDeg = 0;
+
+function setRawHeading(raw) {
+  currentHeadingRaw = ((raw % 360) + 360) % 360;
+  currentHeadingDeg = ((currentHeadingRaw + compassNorthOffset) % 360 + 360) % 360;
+}
+
 function applyHeadingToMarker() {
   if (!myMarker || !myMarker.setRotation) return;
   myMarker.setRotation(currentHeadingDeg * Math.PI / 180);
 }
 
+// ---------- Compass ribbon (top-center, driven by the real device
+// compass sensor - NOT map bearing/rotation, which is a separate concept
+// covered by the round needle button instead) ----------
+const COMPASS_RIBBON_PX_PER_DEG = 3;
+const COMPASS_POINTS_45 = { 0: 'N', 45: 'NE', 90: 'E', 135: 'SE', 180: 'S', 225: 'SW', 270: 'W', 315: 'NW' };
+const COMPASS_CARDINALS = new Set([0, 90, 180, 270]);
+const COMPASS_POINTS_16 = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW'];
+const compassRibbonTrack = document.getElementById('compass-ribbon-track');
+// Five full laps (-2..+2) of ticks built once up front, so the strip has
+// plenty of room to slide through a couple of full device rotations
+// before ever running off the edge of what's actually been built.
+for (let lap = -2; lap <= 2; lap++) {
+  for (let deg = 0; deg < 360; deg += 15) {
+    const x = (lap * 360 + deg) * COMPASS_RIBBON_PX_PER_DEG;
+    const isMajor = deg % 45 === 0;
+    const tick = document.createElement('div');
+    tick.className = 'compass-tick' + (isMajor ? ' major' : '');
+    tick.style.left = `${x}px`;
+    compassRibbonTrack.appendChild(tick);
+    if (isMajor) {
+      const label = document.createElement('div');
+      label.className = 'compass-tick-label'
+        + (COMPASS_CARDINALS.has(deg) ? ' cardinal' : '')
+        + (deg === 0 ? ' north' : '');
+      label.textContent = COMPASS_POINTS_45[deg];
+      label.style.left = `${x}px`;
+      compassRibbonTrack.appendChild(label);
+    }
+  }
+}
+// Same "continuously increasing/decreasing, never re-clamped to 0-360"
+// trick used for the round needle button - the raw sensor heading can
+// jump 359->0 in one real reading, and without unwrapping that the
+// ribbon would visibly snap sideways once per rotation instead of
+// sliding smoothly through it.
+let continuousRibbonHeading = null; // null until the first real reading, so it starts aligned instead of snapping in from 0
+function updateCompassRibbon() {
+  if (continuousRibbonHeading === null) {
+    continuousRibbonHeading = currentHeadingDeg;
+  } else {
+    let delta = currentHeadingDeg - (((continuousRibbonHeading % 360) + 360) % 360);
+    delta = ((delta + 180) % 360 + 360) % 360 - 180;
+    continuousRibbonHeading += delta;
+  }
+  // Wrap back into a single lap. The tick pattern repeats exactly every
+  // 360 degrees, so subtracting a whole lap shifts the strip by exactly
+  // one full period and renders identically - which means rotations are
+  // unlimited in either direction. Without this the accumulator grew
+  // without bound and eventually walked the strip clean off the end of
+  // the pre-built ticks, leaving the ribbon blank (the failure seen after
+  // the phone had been tumbling in a pocket while backgrounded).
+  continuousRibbonHeading = ((continuousRibbonHeading % 360) + 360) % 360;
+
+  const ribbon = document.getElementById('compass-ribbon');
+  const headingX = continuousRibbonHeading * COMPASS_RIBBON_PX_PER_DEG;
+  // clientWidth is 0 while the ribbon is display:none, which would park
+  // the track half a ribbon-width out of position.
+  const width = ribbon.clientWidth;
+  if (width > 0) compassRibbonTrack.style.transform = `translateX(${width / 2 - headingX}px)`;
+
+  const whole = Math.round(currentHeadingDeg) % 360;
+  const point = COMPASS_POINTS_16[Math.round(currentHeadingDeg / 22.5) % 16];
+  document.getElementById('compass-heading-readout').textContent =
+    `${String(whole).padStart(3, '0')}\u00B0 ${point}`;
+}
+
+// Coming back from the background, re-anchor instead of animating through
+// however far the heading moved while nothing was watching.
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) {
+    continuousRibbonHeading = null;
+    updateCompassRibbon();
+  }
+});
+
 // Accuracy circle - only shown when the fix is poor (above threshold),
 // since a precise-looking dot is misleading when GPS accuracy is actually
 // tens of meters wide (common indoors, in canyons, under tree cover).
-const ACCURACY_SHOW_THRESHOLD_M = 20;
+// Single source of truth for "this fix is weak": above it the dot goes
+// amber AND the accuracy circle is drawn on the map, so the two always
+// agree rather than being two independent thresholds.
+const GPS_WEAK_ACCURACY_M = 20;
 let accuracyCircle = null;
 
 function updateAccuracyCircle(pos) {
-  if (typeof pos.accuracy !== 'number' || pos.accuracy <= ACCURACY_SHOW_THRESHOLD_M) {
+  if (typeof pos.accuracy !== 'number' || pos.accuracy <= GPS_WEAK_ACCURACY_M) {
     if (accuracyCircle) { map.removeLayer(accuracyCircle); accuracyCircle = null; }
     return;
   }
@@ -895,26 +1176,204 @@ function updateAccuracyCircle(pos) {
   }
 }
 
-const sensorMode = Compass.startListening((headingDeg) => {
-  currentHeadingDeg = headingDeg;
-  applyHeadingToMarker();
+// Non-blocking - startListening is async now (it has to check whether
+// the native sensor is really available before it can say so), but the
+// rest of this module's setup shouldn't wait on that, so this isn't
+// awaited at the top level; sensorMode just starts null and gets filled
+// in a moment later. The GPS callback below reads it live via closure,
+// not a snapshot, so this resolving slightly after GPS.startWatching()
+// starts is harmless.
+let sensorMode = null;
+Compass.startListening(
+  (headingDeg) => {
+    setRawHeading(headingDeg);
+    applyHeadingToMarker();
+    updateCompassRibbon();
+  },
+  (accuracy) => updateCompassAccuracyBadge(accuracy)
+).then((mode) => {
+  sensorMode = mode;
+  logInfo(mode ? `Compass sensor active (${mode}).` : 'No compass sensor available - heading will only update from GPS movement.');
 });
-logInfo(sensorMode ? `Compass sensor active (${sensorMode}).` : 'No compass sensor available - heading will only update from GPS movement.');
+
+// Only ever called from the native plugin (the web fallback has no
+// equivalent accuracy signal) - a passive indicator on the ribbon plus a
+// line in the calibration popover, so it costs nothing when confident.
+let compassAccuracyLow = false;
+function updateCompassAccuracyBadge(accuracy) {
+  compassAccuracyLow = accuracy === 'low' || accuracy === 'unreliable';
+  document.getElementById('compass-calibrate-warn').classList.toggle('hidden', !compassAccuracyLow);
+  document.getElementById('compass-popover-warning').classList.toggle('hidden', !compassAccuracyLow);
+}
+
+// ---------- Popovers ----------
+// Opened by their trigger, closed by tapping that trigger again or
+// anywhere outside the panel. Triggers carry data-popover-trigger so the
+// document-level close handler can tell "tapped the trigger" (which the
+// trigger's own handler is already toggling) from "tapped away".
+function closeAllPopovers() {
+  document.querySelectorAll('.popover').forEach((p) => p.classList.add('hidden'));
+}
+function togglePopover(id, onOpen) {
+  const el = document.getElementById(id);
+  const wasOpen = !el.classList.contains('hidden');
+  closeAllPopovers();
+  if (!wasOpen) {
+    if (onOpen) onOpen();
+    el.classList.remove('hidden');
+  }
+}
+document.addEventListener('click', (e) => {
+  if (e.target.closest('.popover') || e.target.closest('[data-popover-trigger]')) return;
+  closeAllPopovers();
+});
+
+document.getElementById('compass-ribbon').onclick = () => togglePopover('popover-compass', renderNorthOffsetStatus);
+
+// Off by default - toggled from Settings ("Show compass").
+let showCompassRibbon = localStorage.getItem('showCompassRibbon') === 'true';
+function applyCompassRibbonVisibility() {
+  document.getElementById('compass-ribbon').classList.toggle('hidden', !showCompassRibbon);
+  // Drives --top-row-h, which is what keeps the flag/route/record pills
+  // clear of the ribbon (and lets them reclaim the space when it's off).
+  document.body.classList.toggle('compass-on', showCompassRibbon);
+  if (showCompassRibbon) {
+    continuousRibbonHeading = null; // width is only measurable once it's visible
+    updateCompassRibbon();
+  } else {
+    closeAllPopovers();
+  }
+}
+applyCompassRibbonVisibility();
+const showCompassToggle = document.getElementById('toggle-show-compass');
+showCompassToggle.checked = showCompassRibbon;
+showCompassToggle.addEventListener('change', () => {
+  showCompassRibbon = showCompassToggle.checked;
+  localStorage.setItem('showCompassRibbon', showCompassRibbon ? 'true' : 'false');
+  applyCompassRibbonVisibility();
+});
+
+// ---------- Manual north calibration (in the compass ribbon's popover) ----------
+// Corrects only which direction the app calls north; the heading itself
+// still comes live from the sensors, so this is an offset, not a freeze.
+function renderNorthOffsetStatus() {
+  const el = document.getElementById('north-offset-status');
+  if (!el) return;
+  el.textContent = compassNorthOffset === 0
+    ? 'North calibration: using the sensor\'s own north.'
+    : `North calibration: shifted ${Math.round(compassNorthOffset)}\u00B0 from the sensor's north.`;
+}
+renderNorthOffsetStatus();
+
+function refreshHeadingAfterCalibration() {
+  setRawHeading(currentHeadingRaw);
+  continuousRibbonHeading = null; // snap cleanly to the corrected heading instead of animating the whole offset
+  applyHeadingToMarker();
+  updateCompassRibbon();
+  renderNorthOffsetStatus();
+}
+
+document.getElementById('btn-set-north').onclick = () => {
+  compassNorthOffset = ((-currentHeadingRaw % 360) + 360) % 360;
+  localStorage.setItem('compassNorthOffset', String(compassNorthOffset));
+  refreshHeadingAfterCalibration();
+  logInfo(`North calibrated - sensor heading ${Math.round(currentHeadingRaw)}\u00B0 is now shown as 0\u00B0.`);
+};
+
+document.getElementById('btn-reset-north').onclick = () => {
+  compassNorthOffset = 0;
+  localStorage.removeItem('compassNorthOffset');
+  refreshHeadingAfterCalibration();
+  logInfo('North calibration reset to the sensor\'s own north.');
+};
+
+// ---------- GPS status indicator ----------
+// The chip is just a dot: green/amber/red for "can I trust this fix".
+// The numbers behind that judgement live in the popover.
+const gpsState = { status: 'searching', accuracy: null, lat: null, lng: null, at: null, error: null };
+
+function gpsQuality() {
+  // "searching" covers no-fix-yet and waiting-on-a-resync - both mean the
+  // device is actively working on it, which reads as a spinner rather
+  // than a colour. Red is therefore reserved for an actual failure
+  // (permission denied, no location provider), so it always means
+  // something is wrong - never just that the fix is loose.
+  if (gpsState.status === 'searching' || gpsState.status === 'resyncing') return 'searching';
+  if (gpsState.status !== 'locked') return 'poor';
+  if (typeof gpsState.accuracy !== 'number') return 'good';
+  return gpsState.accuracy <= GPS_WEAK_ACCURACY_M ? 'good' : 'fair';
+}
+
+function updateGpsIndicator() {
+  const quality = gpsQuality();
+  const searching = quality === 'searching';
+  const dot = document.getElementById('gps-dot');
+  document.getElementById('gps-spinner').classList.toggle('hidden', !searching);
+  // Set className wholesale only when the dot is actually shown, so the
+  // colour class can't fight the hidden class.
+  dot.className = searching ? 'gps-dot hidden' : `gps-dot ${quality}`;
+}
+
+function renderGpsPopover() {
+  const statusText = gpsState.status === 'error' ? gpsState.error
+    : gpsState.status === 'searching' ? 'Searching for signal'
+    : gpsState.status === 'resyncing' ? 'Resyncing'
+    : 'Locked';
+  document.getElementById('gps-popover-status').textContent = statusText;
+  document.getElementById('gps-popover-accuracy').textContent =
+    typeof gpsState.accuracy === 'number'
+      ? `\u00B1${GPS.formatDistance(gpsState.accuracy / 1609.344, useMetric)}`
+      : '\u2014';
+  document.getElementById('gps-popover-coords').textContent =
+    gpsState.lat != null ? `${gpsState.lat.toFixed(5)}, ${gpsState.lng.toFixed(5)}` : '\u2014';
+  document.getElementById('gps-popover-age').textContent =
+    gpsState.at ? `${Math.max(0, Math.round((Date.now() - gpsState.at) / 1000))}s ago` : '\u2014';
+}
+
+document.getElementById('status-chip').onclick = () => togglePopover('popover-gps', renderGpsPopover);
+
+function resyncGps() {
+  gpsState.status = 'resyncing';
+  updateGpsIndicator();
+  GPS.resync();
+  logInfo('GPS resynced.');
+}
+
+document.getElementById('btn-gps-resync').onclick = () => {
+  resyncGps();
+  renderGpsPopover();
+};
 
 GPS.startWatching((pos) => {
   if (pos.error) {
-    document.getElementById('gps-status').textContent = `GPS: ${pos.error}`;
+    gpsState.status = 'error';
+    gpsState.error = pos.error;
+    updateGpsIndicator();
     logError(`GPS error: ${pos.error}`);
     return;
   }
-  document.getElementById('gps-status').textContent = 'GPS locked';
+  gpsState.status = 'locked';
+  gpsState.error = null;
+  gpsState.accuracy = typeof pos.accuracy === 'number' ? pos.accuracy : null;
+  gpsState.lat = pos.lat;
+  gpsState.lng = pos.lng;
+  gpsState.at = Date.now();
+  updateGpsIndicator();
 
   if (!sensorMode && typeof pos.heading === 'number' && !isNaN(pos.heading)) {
-    currentHeadingDeg = pos.heading;
+    setRawHeading(pos.heading); // fallback path also honours north calibration
+    updateCompassRibbon();
   }
+  Compass.updateLocation(pos.lat, pos.lng, pos.altitude); // no-op on the web fallback; feeds the native plugin's true-north correction
 
   if (!myMarker) {
     myMarker = L.marker([pos.lat, pos.lng], { icon: headingArrowIcon, rotation: 0, rotateWithView: true }).addTo(map);
+    myMarker.on('click', (ev) => {
+      // In flag/route mode the tap is meant for the map, not for the
+      // marker - drop the flag / add the point right where they tapped.
+      if (flagModeActive || planningRoute) handleMapTap(ev.latlng);
+      else resyncGps();
+    });
     applyHeadingToMarker();
     logInfo(`First GPS fix received: ${pos.lat.toFixed(5)}, ${pos.lng.toFixed(5)}`);
   } else {
@@ -936,6 +1395,7 @@ document.getElementById('btn-locate').onclick = () => {
   followMe = true;
   if (myMarker) map.panTo(myMarker.getLatLng());
   else logError('No GPS fix yet - check location permission is granted.');
+  resyncGps(); // recentre and ask the location provider for a fresh fix
 };
 map.on('dragstart', () => { followMe = false; });
 
@@ -1189,7 +1649,12 @@ async function redrawAllDataFromStore() {
       let dist = 0;
       for (let i = 1; i < r.points.length; i++) dist += GPS.distanceMiles(r.points[i - 1], r.points[i]);
       const latlngs = r.points.map(p => [p.lat, p.lng]);
-      const popupHtml = `<b>${r.name}</b><br>${dist.toFixed(2)} mi`;
+      // The "More" button opens the route details sheet (rename/delete/
+      // per-segment distance list). It's plain HTML inside a Leaflet popup,
+      // so it has no live handler until the popup actually opens - wired
+      // below via the popupopen event on each layer, which is the standard
+      // way to attach behavior to interactive popup content in Leaflet.
+      const popupHtml = `<b>${r.name}</b><br>${GPS.formatDistance(dist, useMetric)}<br><button type="button" class="pill-btn route-popup-more">More</button>`;
       // A visible thin line plus an invisible wide one underneath sharing
       // the same popup - the thin line matches the line's real weight
       // visually, but taps register over a much wider margin around it
@@ -1197,6 +1662,14 @@ async function redrawAllDataFromStore() {
       // almost exactly, which is what made these hard to tap).
       const hitLine = L.polyline(latlngs, { color: '#000', weight: 22, opacity: 0 }).bindPopup(popupHtml);
       const visibleLine = L.polyline(latlngs, { color: '#ffb703', weight: 3, dashArray: '6,6' }).bindPopup(popupHtml);
+      const wireMoreButton = (layer) => {
+        layer.on('popupopen', (e) => {
+          const btn = e.popup.getElement()?.querySelector('.route-popup-more');
+          if (btn) btn.onclick = () => { map.closePopup(); openRouteDetailsSheet(r); };
+        });
+      };
+      wireMoreButton(hitLine);
+      wireMoreButton(visibleLine);
       hitLine.addTo(map);
       visibleLine.addTo(map);
       sessionOverlayLines.push(hitLine, visibleLine);
@@ -1205,7 +1678,7 @@ async function redrawAllDataFromStore() {
       let dist = 0;
       for (let i = 1; i < t.points.length; i++) dist += GPS.distanceMiles(t.points[i - 1], t.points[i]);
       const latlngs = t.points.map(p => [p.lat, p.lng]);
-      const popupHtml = `<b>${t.name}</b><br>${dist.toFixed(2)} mi`;
+      const popupHtml = `<b>${t.name}</b><br>${GPS.formatDistance(dist, useMetric)}`;
       const hitLine = L.polyline(latlngs, { color: '#000', weight: 22, opacity: 0 }).bindPopup(popupHtml);
       const visibleLine = L.polyline(latlngs, { color: '#e6484f', weight: 3 }).bindPopup(popupHtml);
       hitLine.addTo(map);
@@ -1218,6 +1691,68 @@ async function redrawAllDataFromStore() {
   }
 }
 redrawAllDataFromStore();
+
+// ---------- Route details sheet (opened via "More" on a route's map popup) ----------
+let routeDetailsContext = null; // the full route object currently shown in the sheet
+
+function openRouteDetailsSheet(route) {
+  routeDetailsContext = route;
+  renderRouteDetailsSheet(route);
+  openOverlay('sheet-route-details');
+}
+
+function renderRouteDetailsSheet(route) {
+  document.getElementById('route-details-name').textContent = route.name;
+  const segmentsList = document.getElementById('route-details-segments');
+  segmentsList.innerHTML = '';
+  let total = 0;
+  for (let i = 1; i < route.points.length; i++) {
+    const segDist = GPS.distanceMiles(route.points[i - 1], route.points[i]);
+    total += segDist;
+    const li = document.createElement('li');
+    li.innerHTML = `<span>Point ${i} &rarr; Point ${i + 1}<br><small>${GPS.formatDistance(segDist, useMetric)}</small></span>`;
+    segmentsList.appendChild(li);
+  }
+  document.getElementById('route-details-total').textContent = `Total: ${GPS.formatDistance(total, useMetric)} across ${route.points.length} points`;
+}
+
+document.getElementById('btn-route-details-rename').onclick = async () => {
+  if (!routeDetailsContext) return;
+  // askName/askConfirm open their own overlay, which hides this sheet -
+  // reopen it afterward either way (with fresh data on success, unchanged
+  // on cancel) since openOverlay doesn't restore whatever was open before it.
+  const newName = await askName('Rename route', routeDetailsContext.name);
+  if (newName === null) { openOverlay('sheet-route-details'); return; }
+  try {
+    const updated = { ...routeDetailsContext, name: newName };
+    await Store.saveRoute(updated);
+    routeDetailsContext = updated;
+    logInfo(`Route renamed to "${newName}".`);
+    await redrawAllDataFromStore();
+    renderRouteDetailsSheet(updated);
+    openOverlay('sheet-route-details');
+  } catch (e) {
+    logError(`Failed to rename route: ${e.message}`);
+    openOverlay('sheet-route-details');
+  }
+};
+
+document.getElementById('btn-route-details-delete').onclick = async () => {
+  if (!routeDetailsContext) return;
+  const route = routeDetailsContext;
+  const ok = await askConfirm('Delete route?', `Delete saved route "${route.name}"?`);
+  if (!ok) { openOverlay('sheet-route-details'); return; }
+  try {
+    await Store.deleteRoute(route.id);
+    logInfo(`Route "${route.name}" deleted.`);
+    routeDetailsContext = null;
+    await redrawAllDataFromStore();
+    renderDataPanel();
+  } catch (e) {
+    logError(`Failed to delete route: ${e.message}`);
+  }
+  closeOverlay('sheet-route-details');
+};
 
 // ---------- Route planning ----------
 let planningRoute = false;
@@ -1295,10 +1830,10 @@ function updateRouteLine() {
   let dist = 0;
   for (let i = 1; i < routePoints.length; i++) dist += GPS.distanceMiles(routePoints[i - 1], routePoints[i]);
   const latlngs = routePoints.map(p => [p.lat, p.lng]);
-  const popupHtml = `${dist.toFixed(2)} mi`;
+  const popupHtml = GPS.formatDistance(dist, useMetric);
   routeLineHitbox = L.polyline(latlngs, { color: '#000', weight: 22, opacity: 0 }).bindPopup(popupHtml).addTo(map);
   routeLine = L.polyline(latlngs, { color: '#ffb703', weight: 4 }).bindPopup(popupHtml).addTo(map);
-  document.getElementById('route-distance').textContent = `${dist.toFixed(2)} mi`;
+  document.getElementById('route-distance').textContent = GPS.formatDistance(dist, useMetric);
 }
 
 document.getElementById('btn-finish-route').onclick = async () => {
@@ -1317,7 +1852,11 @@ document.getElementById('btn-finish-route').onclick = async () => {
 document.getElementById('btn-cancel-route').onclick = cancelRoutePlanning;
 
 // ---------- Single shared map-click handler (flags + route points) ----------
-map.on('click', async (e) => {
+// Extracted so the GPS position marker can route taps here too - a
+// marker swallows the click rather than letting it reach the map, so in
+// flag/route mode tapping your own position would otherwise do nothing.
+async function handleMapTap(latlng) {
+  const e = { latlng };
   if (planningRoute) {
     addRoutePoint({ lat: e.latlng.lat, lng: e.latlng.lng });
     logInfo(`Route point ${routePoints.length} added.`);
@@ -1337,11 +1876,20 @@ map.on('click', async (e) => {
       logError(`Failed to drop flag: ${err.message}`);
     }
   }
-});
+}
+map.on('click', (e) => handleMapTap(e.latlng));
 
 function updateZoomLock() {
   if (flagModeActive || planningRoute) map.doubleClickZoom.disable();
   else map.doubleClickZoom.enable();
+  updateMapTapMode();
+}
+
+// While placing flags or laying route points, every tap belongs to the
+// map - map-tap-mode drops pointer-events on the vector overlay pane so
+// route/track hit lines stop intercepting them (see style.css).
+function updateMapTapMode() {
+  document.body.classList.toggle('map-tap-mode', flagModeActive || planningRoute);
 }
 updateZoomLock();
 
@@ -1378,7 +1926,7 @@ function recordPoint(pos) {
   const elapsedSec = Math.floor((Date.now() - trackStart) / 1000);
   const mm = String(Math.floor(elapsedSec / 60)).padStart(2, '0');
   const ss = String(elapsedSec % 60).padStart(2, '0');
-  document.getElementById('record-stats').textContent = `${dist.toFixed(2)} mi · ${mm}:${ss}`;
+  document.getElementById('record-stats').textContent = `${GPS.formatDistance(dist, useMetric)} · ${mm}:${ss}`;
 }
 
 async function stopRecordingFlow() {
@@ -1634,7 +2182,7 @@ async function renderDataPanel() {
       let dist = 0;
       for (let i = 1; i < r.points.length; i++) dist += GPS.distanceMiles(r.points[i - 1], r.points[i]);
       const li = document.createElement('li');
-      li.innerHTML = `<span>${r.name}<br><small>${dist.toFixed(2)} mi, ${r.points.length} points</small></span>`;
+      li.innerHTML = `<span>${r.name}<br><small>${GPS.formatDistance(dist, useMetric)}, ${r.points.length} points</small></span>`;
       const actions = document.createElement('span');
       actions.className = 'item-actions';
       const loadBtn = document.createElement('button');
