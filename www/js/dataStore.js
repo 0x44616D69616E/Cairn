@@ -129,12 +129,20 @@ export async function hasAnyCurrentData() {
 // Acts as an upsert: pass an object with an existing `id` to update it in
 // place (used for renaming and renumbering), or omit `id` to create a new
 // flag with a fresh one.
-export async function saveWaypoint({ id, lat, lng, name, notes, iconType, createdAt }) {
+export async function saveWaypoint({ id, lat, lng, name, notes, iconType, createdAt, boundRouteId, routeDistance }) {
   return putRecord('waypoints', {
     id: id || uid(),
     lat, lng, name, notes,
     iconType: iconType || 'flag', // default for backward compatibility with flags saved before this feature existed
-    createdAt: createdAt || Date.now()
+    createdAt: createdAt || Date.now(),
+    // boundRouteId/routeDistance: which route (if any) this flag is bound
+    // to, and its distance-along-that-route - undefined for the vast
+    // majority of flags that were never bound. routeDistance is what lets
+    // "next waypoint" ordering during navigation just be a sort/compare,
+    // instead of re-projecting every bound flag onto the route on every
+    // GPS tick.
+    boundRouteId: boundRouteId ?? null,
+    routeDistance: typeof routeDistance === 'number' ? routeDistance : null
   });
 }
 export async function getWaypoints() { return getAll('waypoints'); }

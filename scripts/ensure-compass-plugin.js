@@ -68,7 +68,21 @@ import com.getcapacitor.annotation.CapacitorPlugin;
 @CapacitorPlugin(name = "CompassSensor")
 public class CompassSensorPlugin extends Plugin implements SensorEventListener {
 
-    private static final double SMOOTHING_ALPHA = 0.25; // 0-1, higher = more responsive, lower = smoother
+    // Adaptive smoothing. A single fixed alpha has to be a compromise
+    // between two opposite jobs: suppressing the constant few-degree
+    // jitter of a magnetometer at rest, and following a real turn without
+    // visible lag. Scaling alpha by how large the change is lets it do
+    // both - tiny changes are treated as noise and damped hard, large
+    // ones are treated as genuine movement and followed quickly.
+    //
+    // These values are tuned for SENSOR_DELAY_UI (~60ms). An EMA's time
+    // constant depends on sample rate, so they would be far too heavy at
+    // the ~20ms of SENSOR_DELAY_GAME - if the rate below is ever changed,
+    // these have to change with it.
+    private static final double SMOOTHING_ALPHA_MIN = 0.20; // jitter: heavy damping
+    private static final double SMOOTHING_ALPHA_MAX = 0.65; // real turn: follow closely
+    private static final double SMOOTHING_NOISE_DEG = 2.0;  // at or below this, assume noise
+    private static final double SMOOTHING_TURN_DEG = 25.0;  // at or above this, assume a real turn
 
     private SensorManager sensorManager;
     private Sensor rotationVectorSensor;
@@ -97,7 +111,7 @@ public class CompassSensorPlugin extends Plugin implements SensorEventListener {
     @PluginMethod
     public void start(PluginCall call) {
         if (rotationVectorSensor != null && !listening) {
-            sensorManager.registerListener(this, rotationVectorSensor, SensorManager.SENSOR_DELAY_GAME);
+            sensorManager.registerListener(this, rotationVectorSensor, SensorManager.SENSOR_DELAY_UI);
             listening = true;
         }
         call.resolve();
@@ -124,7 +138,7 @@ public class CompassSensorPlugin extends Plugin implements SensorEventListener {
     @Override
     protected void handleOnPause() {
         // Stop listening while backgrounded: the rotation vector sensor
-        // otherwise keeps firing at SENSOR_DELAY_GAME the whole time the
+        // otherwise keeps firing at SENSOR_DELAY_UI the whole time the
         // phone is in a pocket, which burns battery for readings nothing
         // is displaying. \`listening\` deliberately stays true so resume
         // knows to re-register.
@@ -135,7 +149,7 @@ public class CompassSensorPlugin extends Plugin implements SensorEventListener {
     protected void handleOnResume() {
         if (listening && rotationVectorSensor != null) {
             smoothedHeading = null; // don't blend the first new reading against a stale pre-pause value
-            sensorManager.registerListener(this, rotationVectorSensor, SensorManager.SENSOR_DELAY_GAME);
+            sensorManager.registerListener(this, rotationVectorSensor, SensorManager.SENSOR_DELAY_UI);
         }
     }
 
@@ -181,7 +195,20 @@ public class CompassSensorPlugin extends Plugin implements SensorEventListener {
         if (smoothedHeading == null) return newHeading;
         double delta = newHeading - smoothedHeading;
         delta = ((delta + 180) % 360 + 360) % 360 - 180;
-        return ((smoothedHeading + delta * SMOOTHING_ALPHA) % 360 + 360) % 360;
+
+        double magnitude = Math.abs(delta);
+        double alpha;
+        if (magnitude <= SMOOTHING_NOISE_DEG) {
+            alpha = SMOOTHING_ALPHA_MIN;
+        } else if (magnitude >= SMOOTHING_TURN_DEG) {
+            alpha = SMOOTHING_ALPHA_MAX;
+        } else {
+            // Linear ramp between the two, so there's no visible step in
+            // responsiveness as a movement grows.
+            double t = (magnitude - SMOOTHING_NOISE_DEG) / (SMOOTHING_TURN_DEG - SMOOTHING_NOISE_DEG);
+            alpha = SMOOTHING_ALPHA_MIN + t * (SMOOTHING_ALPHA_MAX - SMOOTHING_ALPHA_MIN);
+        }
+        return ((smoothedHeading + delta * alpha) % 360 + 360) % 360;
     }
 
     private String accuracyLabel(int accuracy) {

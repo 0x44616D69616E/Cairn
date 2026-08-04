@@ -57,6 +57,46 @@ html, body {
    and reclaim the space when the compass is off rather than leaving a
    gap. (The pills previously overlapped the GPS chip outright once their
    icon grid expanded; anchoring them to this variable fixes that too.) */
+/* Global fallback: every other .hidden rule in this file is scoped to a
+   specific element (.popover.hidden, #nav-hud.hidden, etc.) rather than a
+   bare .hidden - which meant any element that used class="... hidden"
+   without someone remembering to also add a matching scoped rule never
+   actually hid at all, since nothing said what "hidden" meant for it.
+   That's exactly what happened to the flag bind/unbind buttons. This is
+   a low-specificity safety net so that class of bug can't recur - the
+   more specific rules below (like .dialog.hidden's extra opacity/
+   pointer-events) still win wherever they exist, since a single-class
+   selector loses to any compound one. */
+.hidden { display: none; }
+
+/* ===== Handedness =====
+   Every element anchored to a screen edge references these variables
+   instead of hardcoding left/right, so flipping the whole layout is one
+   class on <body> rather than a duplicate rule per element.
+   "controls" = things you tap (FAB stack, flag/route menus). "info" =
+   things you read (legends, scale bar, nav HUD). They always sit on
+   opposite sides so a thumb never covers what it's meant to be reading.
+   Default is right-handed: controls right, info left. */
+body {
+  --controls-left: auto;
+  --controls-right: 12px;
+  --controls-pill-left: auto;
+  --controls-pill-right: 74px; /* clears the 50px FAB column plus a gap */
+  --info-left: 12px;
+  --info-right: auto;
+  /* The map credits sit flush against the bottom edge, so nothing else
+     anchored down there may use an offset of 0. */
+  --bottom-band: calc(44px + var(--safe-bottom));
+}
+body.left-handed {
+  --controls-left: 12px;
+  --controls-right: auto;
+  --controls-pill-left: 74px;
+  --controls-pill-right: auto;
+  --info-left: auto;
+  --info-right: 12px;
+}
+
 body { --top-row-h: 38px; }
 body.compass-on { --top-row-h: 54px; }
 
@@ -104,10 +144,16 @@ body.compass-on #status-chip { top: calc(72px + var(--safe-top)); }
 
 /* While placing flags or laying down route points, every tap is meant for
    the map. Route and track lines each carry a 22px-wide invisible hit
-   line (added so thin lines are tappable at all), which otherwise
-   swallows those taps and opens their popup instead - most noticeably
-   when a recorded track follows the very trail you're trying to flag. */
-body.map-tap-mode .leaflet-overlay-pane { pointer-events: none; }
+   line (added so thin lines are tappable at all) - targeting only the
+   pane here didn't actually work, because Leaflet's own CSS explicitly
+   re-enables pointer-events on each interactive path via the
+   .leaflet-interactive class (that's the actual mechanism that makes a
+   thin line tappable at all in the first place). That class wins over an
+   ancestor's pointer-events: none regardless, since pointer-events
+   doesn't "block" through an explicit child override the way most CSS
+   properties inherit - so the fix has to target that same class
+   directly, not the pane. */
+body.map-tap-mode .leaflet-overlay-pane .leaflet-interactive { pointer-events: none !important; }
 
 #search-results {
   position: absolute; top: calc(64px + var(--safe-top)); left: 10px; right: 10px; z-index: 495;
@@ -191,6 +237,93 @@ body.map-tap-mode .leaflet-overlay-pane { pointer-events: none; }
   border-radius: 999px; background: var(--accent-soft); color: var(--accent);
   font-size: 9px; font-weight: 700; letter-spacing: 0.6px; vertical-align: middle;
 }
+
+/* ===== Navigation HUD - bottom bar, active while navigating a route.
+   Constrained on the right so it never runs under the FAB column. ===== */
+#nav-hud, #nav-suggest {
+  /* Bottom offset matches #map-overlays-stack, which already solves this
+     same problem: the attribution/credits control and the scale bar both
+     occupy the bottom band, and 20px put this straight on top of them.
+     Mirrors the legend stack's scale-bar-aware pair of offsets so the two
+     stay consistent if either is retuned later. */
+  position: absolute;
+  left: var(--info-left); right: var(--info-right);
+  width: min(300px, calc(100vw - 90px));
+  bottom: calc(75px + var(--safe-bottom)); z-index: 495;
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md);
+  box-shadow: var(--shadow-elevated); padding: 10px 14px;
+  transition: bottom 0.2s ease;
+}
+body.scale-bar-hidden #nav-hud,
+body.scale-bar-hidden #nav-suggest {
+  bottom: calc(50px + var(--safe-bottom));
+}
+#nav-hud.hidden, #nav-suggest.hidden { display: none; }
+
+/* The nearby-route picker deliberately is NOT a .dialog: it needs the map
+   fully visible and undimmed behind it, since its whole purpose is
+   comparing routes drawn on that map. So it gets no backdrop, sits low
+   rather than centred, and shares the nav HUD's placement and width. */
+.nav-picker {
+  position: absolute;
+  left: var(--info-left); right: var(--info-right);
+  width: min(320px, calc(100vw - 90px));
+  bottom: calc(75px + var(--safe-bottom)); z-index: 496;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius-md); box-shadow: var(--shadow-elevated);
+  padding: 12px 14px;
+}
+.nav-picker.hidden { display: none; }
+body.scale-bar-hidden .nav-picker { bottom: calc(50px + var(--safe-bottom)); }
+.nav-picker-title { margin: 0 0 2px; font-size: 14px; }
+.nav-picker .hint { margin: 0 0 4px; }
+#nav-suggest { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+#nav-suggest-label { font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* The dashed route line, while you're close enough to actually start
+   navigating it - flowing toward the destination end as a "this way"
+   cue, same trigger as the Start suggestion above. Direction assumes
+   dash-offset decreasing moves the pattern the same way the path itself
+   was drawn (start point -> destination); if it visually reads as
+   flowing the wrong way on-device, flip the keyframe's from/to values. */
+.route-line-flowing { animation: routeFlow 1s linear infinite; }
+@keyframes routeFlow { from { stroke-dashoffset: 12; } to { stroke-dashoffset: 0; } }
+
+/* The route currently selected in the nearby-route picker: keeps the
+   flowing dashes AND adds a pulsing glow, so it reads as the live
+   selection even against a busy basemap. Two animations on one element,
+   comma-separated - they run independently and don't need to share a
+   duration. drop-shadow (not box-shadow) because this is an SVG path,
+   where box-shadow has no effect. */
+.route-line-selected {
+  animation: routeFlow 1s linear infinite, routeGlow 1.6s ease-in-out infinite;
+}
+@keyframes routeGlow {
+  /* Orange - close to the route's own amber, but pushed brighter and
+     more saturated so the glow reads as "this line, lit up" rather than
+     a separate colour next to it. Kept high-luminance since a glow works
+     by ADDING light - a dark-valued colour barely registers against pale
+     topo tiles, which is where most basemaps sit. */
+  0%, 100% { filter: drop-shadow(0 0 3px rgba(249,115,22,0.85)); }
+  50%      { filter: drop-shadow(0 0 8px rgba(251,146,60,1)) drop-shadow(0 0 16px rgba(249,115,22,0.75)); }
+}
+.nav-hud-row { display: flex; align-items: center; gap: 14px; }
+.nav-hud-stat { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+.nav-hud-stat span { font-size: 16px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.nav-hud-stat small { font-size: 10px; color: var(--text-muted); }
+#nav-off-route-warning { color: var(--danger); margin: 6px 0 0; }
+#nav-off-route-warning.hidden { display: none; }
+
+/* Direction-to-next-waypoint marker on the compass ribbon - a single
+   element repositioned every tick (not repeated across laps like the
+   tick marks, since it tracks one specific live bearing, not a fixed
+   compass point). */
+#compass-nav-diamond {
+  position: absolute; bottom: 2px; width: 8px; height: 8px;
+  transform: translateX(-50%) rotate(45deg);
+  background: var(--accent); box-shadow: 0 0 6px 2px var(--accent);
+}
+#compass-nav-diamond.hidden { display: none; }
 .result-item {
   padding: 12px 14px; font-size: 13px; border-bottom: 1px solid var(--border-soft); cursor: pointer;
 }
@@ -200,9 +333,13 @@ body.map-tap-mode .leaflet-overlay-pane { pointer-events: none; }
 
 /* ===== Floating action buttons ===== */
 #fab-stack {
-  position: absolute; right: 12px; bottom: calc(20px + var(--safe-bottom)); z-index: 500;
-  display: flex; flex-direction: column; gap: 10px; align-items: flex-end;
+  position: absolute;
+  left: var(--controls-left); right: var(--controls-right);
+  bottom: var(--bottom-band); z-index: 500;
+  display: flex; flex-direction: column; gap: 10px;
+  align-items: flex-end;
 }
+body.left-handed #fab-stack { align-items: flex-start; }
 .fab {
   width: 50px; height: 50px; border-radius: 50%;
   background: var(--surface); border: 1px solid var(--border); color: var(--text);
@@ -331,6 +468,14 @@ body.map-tap-mode .leaflet-overlay-pane { pointer-events: none; }
   height: 34px;
   margin-bottom: calc(30px + var(--safe-bottom)) !important;
 }
+/* In left-hand mode the scale control moves to the bottom-RIGHT corner,
+   where Leaflet right-aligns its container. The scale lines are
+   absolutely positioned, so they're out of flow and the container
+   collapses to zero width - meaning `left: 0` started them at the screen
+   edge and ran them straight off it. Anchoring to the right instead
+   makes them extend inward, which is the only direction there's room. */
+body.left-handed .leaflet-control-scale-line { left: auto; right: 0; }
+body.left-handed .leaflet-control-scale { margin-right: 12px !important; margin-left: 0 !important; }
 
 /* ===== Retheme Leaflet's default popup - used for the route/track map
    bubbles - to match the app's dark surface. Untouched, this is stock
@@ -376,7 +521,9 @@ body.map-tap-mode .leaflet-overlay-pane { pointer-events: none; }
   /* bottom offset raised in step with .leaflet-control-scale below, so
      legends/radar controls keep clearing the scale bar's position with
      the same margin as before, rather than starting to overlap it */
-  position: absolute; left: 12px; bottom: calc(75px + var(--safe-bottom)); z-index: 470;
+  position: absolute;
+  left: var(--info-left); right: var(--info-right);
+  bottom: calc(75px + var(--safe-bottom)); z-index: 470;
   display: flex; flex-direction: column-reverse; gap: 8px; /* column-reverse: first-added stays closest to its natural bottom slot */
   max-width: 210px;
   transition: bottom 0.2s ease;
@@ -387,12 +534,26 @@ body.map-tap-mode .leaflet-overlay-pane { pointer-events: none; }
 #map-overlays-stack.scale-bar-hidden {
   bottom: calc(50px + var(--safe-bottom));
 }
+/* The nav HUD and the legends share the info side's bottom corner, so
+   the legends have to stack above the HUD while it's up rather than
+   sitting underneath it. ~66px covers the HUD's own height plus a gap. */
+body.nav-hud-active #map-overlays-stack { bottom: calc(141px + var(--safe-bottom)); }
+body.nav-hud-active #map-overlays-stack.scale-bar-hidden { bottom: calc(116px + var(--safe-bottom)); }
 .map-overlay {
   background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md);
   box-shadow: var(--shadow-elevated); overflow: hidden;
   width: 210px; /* fixed, not shrink-to-fit - otherwise the panel visibly
     resized every time the radar clock text changed length (e.g. "12:45 PM"
     vs "1:05 PM" have different digit counts) */
+  /* column-reverse renders the body ABOVE the header despite the header
+     coming first in the DOM. Combined with the stack being anchored to
+     the bottom of the screen, that means expanding a legend grows it
+     upward while the header itself stays exactly where it was - rather
+     than the whole panel (title included) jumping up the screen as the
+     body appears, which made the toggle feel like it moved away from
+     the finger that just tapped it. */
+  display: flex;
+  flex-direction: column-reverse;
 }
 .map-overlay.hidden { display: none; }
 .map-overlay-header {
@@ -401,8 +562,12 @@ body.map-tap-mode .leaflet-overlay-pane { pointer-events: none; }
 }
 .map-overlay-header .chevron { width: 14px; height: 14px; color: var(--text-muted); transition: transform 0.15s ease; }
 .map-overlay-header .chevron svg { width: 14px; height: 14px; }
-.map-overlay.collapsed .map-overlay-header .chevron { transform: rotate(-90deg); }
-.map-overlay-body { padding: 0 12px 10px; }
+/* Collapsed points UP (tap to open, which now opens upward); expanded
+   is the default chevronDown pointing down (tap to close). Previously
+   collapsed pointed sideways, which no longer matches the direction the
+   panel actually moves. */
+.map-overlay.collapsed .map-overlay-header .chevron { transform: rotate(180deg); }
+.map-overlay-body { padding: 10px 12px 0; } /* flipped: the body now renders above the header */
 .map-overlay.collapsed .map-overlay-body { display: none; }
 .map-overlay .radar-controls { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
 .map-overlay .radar-controls .icon-btn { flex-shrink: 0; background: var(--surface-raised); border: 1px solid var(--border); }
@@ -535,6 +700,23 @@ input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--accent);
 }
 .data-list li:last-child { border-bottom: none; }
 .data-list li small { color: var(--text-muted); font-size: 11.5px; }
+/* Selected row in the nearby-route picker - marks which route is
+   currently previewed (animated dashes) on the map behind the dialog. */
+.data-list li.selected {
+  background: var(--accent-soft);
+  border-radius: var(--radius-sm);
+  padding-left: 8px; padding-right: 8px;
+}
+/* Scrolls rather than growing without bound. There was never a cap on how
+   many nearby routes the picker lists, but without this the list simply
+   grew until it pushed Cancel/Start off the bottom of the screen, which
+   was a limit in practice. Capped against viewport height so it adapts to
+   the device rather than assuming a row count. */
+#nav-route-picker-list {
+  max-height: min(50vh, 320px);
+  overflow-y: auto;
+  overscroll-behavior: contain; /* don't let an over-scroll bubble out and pan the map behind */
+}
 .item-actions { display: flex; gap: 6px; flex-shrink: 0; }
 .item-actions button {
   padding: 6px 10px; border-radius: var(--radius-sm); border: 1px solid var(--border);
@@ -563,11 +745,26 @@ input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--accent);
   position: absolute; left: 50%; top: calc(64px + var(--safe-top) + var(--top-row-h)); z-index: 480;
   transform: translateX(-50%);
   display: flex; align-items: center; gap: 10px;
+  max-width: calc(100vw - 24px);
   background: var(--surface); border: 1px solid var(--border); border-radius: 999px;
   padding: 8px 10px 8px 14px; box-shadow: var(--shadow-elevated); font-size: 13px;
   white-space: nowrap;
 }
 .status-pill.hidden { display: none; }
+
+/* The flag and route menus are things you actively operate while the
+   other hand holds nothing, so they sit right next to the FAB column
+   instead of at the top of the screen - reachable with the same thumb,
+   and out of the way of the map you're tapping. The record pill keeps
+   the original top-centre spot: it's a passive indicator, not a control.
+   Anchored by the BOTTOM so any popout (the flag icon grid) grows
+   upward, away from the thumb rather than under it. */
+.control-pill {
+  top: auto; transform: none;
+  left: var(--controls-pill-left); right: var(--controls-pill-right);
+  bottom: var(--bottom-band);
+  max-width: calc(100vw - 100px);
+}
 
 #flag-status-pill {
   border-radius: var(--radius-md); /* rounded rectangle, not the 999px pill shape -

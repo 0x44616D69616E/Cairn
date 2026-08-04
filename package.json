@@ -1,10 +1,10 @@
 {
-  "name": "cairn",
-  "version": "1.1.0",
-  "description": "Cairn - a fully offline GIS-style topo/satellite/trail map with GPS, waypoints, and route recording",
+  "name": "datum",
+  "version": "1.2.0",
+  "description": "Datum - a fully offline GIS-style topo/satellite/trail map with GPS, waypoints, and route recording",
   "scripts": {
     "sync": "npx cap sync android",
-    "fix-manifest": "node scripts/ensure-manifest-permissions.js && node scripts/ensure-storage-plugin.js && node scripts/ensure-compass-plugin.js",
+    "fix-manifest": "node scripts/ensure-manifest-permissions.js && node scripts/ensure-storage-plugin.js && node scripts/ensure-compass-plugin.js && node scripts/ensure-branding.js",
     "open:android": "npx cap open android",
     "add:android": "npx cap add android"
   },

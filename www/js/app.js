@@ -56,6 +56,7 @@ document.getElementById('btn-fab-menu').onclick = () => {
   fabMenuOpen = !fabMenuOpen;
   document.getElementById('fab-menu-items').classList.toggle('hidden', !fabMenuOpen);
   document.getElementById('btn-fab-menu').classList.toggle('active', fabMenuOpen);
+  refreshControlLayout(); // the anchor FABs just appeared or vanished
 };
 
 // ---------- Settings ----------
@@ -73,11 +74,11 @@ function refreshStorageUI() {
   }
   if (Storage.isStorageConfigured()) {
     const dirLabel = Storage.getConfiguredDirectory() === 'DOCUMENTS' ? 'Documents' : 'Downloads';
-    statusText.textContent = `Storage is set up (${dirLabel}/Cairn). Map tiles stay cached separately and aren't part of backups - they can always be re-downloaded.`;
+    statusText.textContent = `Storage is set up (${dirLabel}/Datum). Map tiles stay cached separately and aren't part of backups - they can always be re-downloaded.`;
     backupActions.classList.remove('hidden');
     refreshBackupFilesList();
   } else {
-    statusText.textContent = 'Not set up yet. This creates a Documents/Cairn folder for backing up your flags, routes, tracks, and settings.';
+    statusText.textContent = 'Not set up yet. This creates a Documents/Datum folder for backing up your flags, routes, tracks, and settings.';
     backupActions.classList.add('hidden');
   }
 }
@@ -120,8 +121,8 @@ function askStorageFolder() {
     const dlBtn = document.getElementById('btn-folder-downloads');
     const browseBtn = document.getElementById('btn-folder-browse');
     const cleanup = () => { docsBtn.onclick = null; dlBtn.onclick = null; browseBtn.onclick = null; closeOverlay('dialog-storage-folder'); };
-    docsBtn.onclick = () => { cleanup(); resolve({ directory: 'DOCUMENTS', relativePath: '', label: 'Documents/Cairn' }); };
-    dlBtn.onclick = () => { cleanup(); resolve({ directory: 'EXTERNAL_STORAGE', relativePath: '', label: 'Downloads/Cairn' }); };
+    docsBtn.onclick = () => { cleanup(); resolve({ directory: 'DOCUMENTS', relativePath: '', label: 'Documents/Datum' }); };
+    dlBtn.onclick = () => { cleanup(); resolve({ directory: 'EXTERNAL_STORAGE', relativePath: '', label: 'Downloads/Datum' }); };
     browseBtn.onclick = async () => { cleanup(); resolve(await browseForFolder()); };
   });
 }
@@ -141,7 +142,7 @@ async function browseForFolder() {
   if (!granted) {
     const ok = await askConfirm(
       'Allow file access?',
-      'Browsing for a folder needs "All files access." The next screen is Android\'s own settings page - turn on the toggle for Cairn, then come back here and tap Browse again.'
+      'Browsing for a folder needs "All files access." The next screen is Android\'s own settings page - turn on the toggle for Datum, then come back here and tap Browse again.'
     );
     if (ok) await Storage.requestAllFilesAccess();
     return null;
@@ -188,7 +189,7 @@ async function browseForFolder() {
     };
     selectBtn.onclick = () => {
       closeOverlay('sheet-folder-browser');
-      resolve({ directory: 'EXTERNAL_STORAGE', relativePath: currentPath, label: `${currentPath || 'Storage'}/Cairn` });
+      resolve({ directory: 'EXTERNAL_STORAGE', relativePath: currentPath, label: `${currentPath || 'Storage'}/Datum` });
     };
     // Backing out via the sheet's own X should resolve null, same as
     // cancelling the Documents/Downloads dialog does.
@@ -251,6 +252,48 @@ document.getElementById('btn-onboarding-storage-setup').onclick = async () => {
 };
 
 // ---------- In-app prompts (replace window.prompt/confirm) ----------
+// Re-prompts until the name is unique (or cancelled). `taken` is the list
+// of names already in use; comparison is case-insensitive and trims, since
+// "My Route" and "my route " are the same name to a person reading a list.
+// Appends " 2", " 3", ... to `base` until the result isn't already taken.
+// An existing trailing number is stripped first, so re-suggesting from
+// "My Route 2" gives "My Route 3" rather than "My Route 2 2".
+function uniqueNameSuggestion(base, takenLower) {
+  const trimmed = base.trim();
+  // A free name is always returned untouched, trailing number or not -
+  // otherwise a caller passing an already-available "Ridge 9" would get
+  // "Ridge 10" for no reason.
+  if (!takenLower.includes(trimmed.toLowerCase())) return trimmed;
+  // Split a trailing number off the end, so "Trail 5" counts up from 6
+  // rather than dropping back to a bare "Trail" - and so re-suggesting
+  // from "My Route 2" gives "My Route 3", not "My Route 2 2".
+  const match = trimmed.match(/^(.*?)\s+(\d+)$/);
+  const stem = match ? match[1] : trimmed;
+  const startAt = match ? Number(match[2]) + 1 : 2;
+  for (let n = startAt; n < startAt + 10000; n++) {
+    const candidate = `${stem} ${n}`;
+    if (!takenLower.includes(candidate.toLowerCase())) return candidate;
+  }
+  return `${stem} ${Date.now()}`; // unreachable in practice, but never return a known-taken name
+}
+
+async function askUniqueName(title, defaultValue, taken, label = 'name') {
+  const takenLower = taken.map(n => (n || '').trim().toLowerCase());
+  // Open with a name that's already free, rather than one that will be
+  // rejected the moment it's submitted.
+  let suggestion = uniqueNameSuggestion(defaultValue, takenLower);
+  for (;;) {
+    const name = await askName(title, suggestion);
+    if (name === null) return null;
+    if (!takenLower.includes(name.trim().toLowerCase())) return name;
+    // Still confirmed rather than silently renamed: re-prompt pre-filled
+    // with the next free variant, so accepting is one tap but the name is
+    // never changed without the user seeing it.
+    suggestion = uniqueNameSuggestion(name, takenLower);
+    await showAlert('Name already used', `Another ${label} is called "${name}". Suggested instead: "${suggestion}".`);
+  }
+}
+
 function askName(title, defaultValue) {
   return new Promise((resolve) => {
     document.getElementById('name-prompt-title').textContent = title;
@@ -289,7 +332,42 @@ const map = L.map('map', {
 // Both units shown at once - unlike the route/track distance displays
 // elsewhere, two stacked lines here isn't clutter, and there's no reason
 // to force a choice for a glanceable reference like this one.
-const scaleControl = L.control.scale({ position: 'bottomleft', imperial: true, metric: true }).addTo(map);
+let scaleControl = L.control.scale({ position: 'bottomleft', imperial: true, metric: true }).addTo(map);
+
+// ---------- Handedness ----------
+// Default right-handed. Everything except the scale bar flips via CSS
+// variables (see the --controls-*/--info-* block in style.css); the scale
+// bar is a real Leaflet control, and Leaflet has no "move this control"
+// API, so it genuinely has to be removed and re-added on the other
+// corner. It's recreated rather than mutated so its position option is
+// actually honoured.
+let leftHanded = localStorage.getItem('leftHanded') === 'true';
+function applyHandedness() {
+  document.body.classList.toggle('left-handed', leftHanded);
+  map.removeControl(scaleControl);
+  scaleControl = L.control.scale({
+    position: leftHanded ? 'bottomright' : 'bottomleft',
+    imperial: true,
+    metric: true
+  }).addTo(map);
+  // Keep the credits in the OPPOSITE bottom corner from the scale bar.
+  // Leaflet stacks every control sharing a corner container vertically,
+  // so when both landed bottom-right the scale bar got pushed up above
+  // the (tall, wrapped) attribution text - which is why it sat noticeably
+  // higher in left-hand mode than right. Separating them keeps the scale
+  // bar at the same height in both modes.
+  if (map.attributionControl) {
+    map.attributionControl.setPosition(leftHanded ? 'bottomleft' : 'bottomright');
+  }
+  applyScaleBarVisibility(); // the fresh control defaults to visible, so re-apply the hidden setting
+}
+const leftHandedToggle = document.getElementById('toggle-left-handed');
+leftHandedToggle.checked = leftHanded;
+leftHandedToggle.addEventListener('change', () => {
+  leftHanded = leftHandedToggle.checked;
+  localStorage.setItem('leftHanded', leftHanded ? 'true' : 'false');
+  applyHandedness();
+});
 
 // On by default now - the route tool measures distance precisely, but a
 // glanceable reference is still generally useful. Toggled from Settings
@@ -300,8 +378,17 @@ let scaleBarHidden = localStorage.getItem('hideScaleBar') === 'true';
 function applyScaleBarVisibility() {
   scaleControl.getContainer().style.display = scaleBarHidden ? 'none' : '';
   document.getElementById('map-overlays-stack').classList.toggle('scale-bar-hidden', scaleBarHidden);
+  // Also on body, so elements outside the overlay stack (the nav HUD and
+  // nav suggestion, which sit in the same bottom band) can react to the
+  // scale bar appearing/disappearing with the same offsets.
+  document.body.classList.toggle('scale-bar-hidden', scaleBarHidden);
 }
 applyScaleBarVisibility();
+// Called here, not up with its own definition: applyHandedness() re-runs
+// applyScaleBarVisibility(), which reads the `scaleBarHidden` let declared
+// just above - calling it any earlier would hit that variable's temporal
+// dead zone and throw, killing every line of setup after it.
+applyHandedness();
 
 const hideScaleBarToggle = document.getElementById('toggle-hide-scale-bar');
 hideScaleBarToggle.checked = scaleBarHidden;
@@ -898,6 +985,7 @@ function updateMapOverlays() {
   } else {
     blmOverlay.classList.add('hidden');
   }
+  refreshControlLayout(); // legend set just changed - overlap may have appeared or cleared
 }
 
 document.getElementById('btn-radar-play').onclick = toggleRadarPlayback;
@@ -908,6 +996,12 @@ document.getElementById('radar-frame-time').onclick = () => { if (radarLoadError
 document.querySelectorAll('.map-overlay-header').forEach((header) => {
   header.onclick = () => {
     document.getElementById(header.dataset.target).classList.toggle('collapsed');
+    // Expanding or collapsing changes the stack's height, which changes
+    // whether it collides with the bottom-band panels - this hook was
+    // missing, so a legend opened while the route picker was up kept the
+    // clearance calculated for its collapsed height and ended up behind
+    // the picker (which sits at a higher z-index).
+    requestAnimationFrame(refreshControlLayout);
   };
 });
 
@@ -1034,12 +1128,130 @@ function updateCompassDisplay() {
 map.on('rotate', updateCompassDisplay);
 updateCompassDisplay();
 
-document.getElementById('btn-compass').onclick = () => {
-  if (map.setBearing) {
-    map.setBearing(0);
-    logInfo('Map reset to north-up.');
+// ---------- Heading lock ----------
+// Two states, toggled by the compass FAB:
+//   locked   - map continuously rotates so the direction you're facing is
+//              up. Free rotation is off (it would fight the sensor).
+//   unlocked - map snaps back to north-up and stays where you put it;
+//              drag/pinch-rotate work normally.
+// Independent of navigation: navigating no longer force-rotates the map,
+// it just respects whichever state this is in.
+let headingLocked = false;
+// Remembers the lock state from before navigation auto-enabled it, so
+// stopping navigation restores the user's own choice instead of guessing.
+let headingLockBeforeNav = null;
+
+// map.setBearing is expensive - it rotates the map pane, fires Leaflet's
+// 'rotate' event, and makes the vector renderer reproject every polyline
+// (including both nav route lines). The compass sensor delivers at
+// SENSOR_DELAY_GAME, roughly 50 readings a second, so calling it per
+// reading meant ~50 full map re-renders per second. This gates on both a
+// minimum angle change and a minimum interval, which cuts that to a
+// handful per second with no visible loss of smoothness.
+let programmaticMoveDepth = 0;
+function programmaticMove(fn) {
+  programmaticMoveDepth++;
+  try { fn(); } finally {
+    // Cleared on a timer, not immediately: Leaflet's move/zoom events are
+    // asynchronous, so the events this call triggers arrive after the
+    // synchronous call itself has already returned.
+    setTimeout(() => { programmaticMoveDepth = Math.max(0, programmaticMoveDepth - 1); }, 400);
   }
-};
+}
+
+// ---------- Heading-lock map rotation ----------
+// The map's rotation is animated independently of the sensor rate rather
+// than being driven directly by it. Driving it directly meant the map
+// could only ever move in sensor-sized steps - and the throttle that used
+// to guard this (a 1.5 degree deadband plus an 80ms gate) quantised those
+// steps further, which is exactly what made rotation look choppy while
+// the compass ribbon itself stayed smooth.
+//
+// Instead the sensor only ever updates a TARGET, and a requestAnimationFrame
+// loop eases the map's actual bearing toward it at display rate. The loop
+// stops as soon as it has caught up, so a stationary phone costs nothing -
+// which was the real point of the old throttle, achieved without
+// coarsening the motion.
+const BEARING_EASE = 0.28;        // fraction of the remaining angle per frame
+const BEARING_SETTLED_DEG = 0.05; // close enough to snap and stop the loop
+const BEARING_MIN_FRAME_MS = 16;  // cap at ~60fps; rAF alone would run at 120Hz on a high-refresh screen
+// Set only for the duration of each setBearing call. Deliberately NOT
+// programmaticMove: that schedules a 400ms timer per call, which at 60fps
+// would mean sixty timers created every second. leaflet-rotate fires
+// 'rotate' synchronously from setBearing, so a plain flag is both cheaper
+// and more precise.
+let applyingBearingAnimation = false;
+let targetBearing = null;
+let renderedBearing = null;
+let bearingRafId = null;
+let lastBearingFrameAt = 0;
+
+function applyHeadingLockBearing() {
+  if (!headingLocked || !map.setBearing) return;
+  // Negated deliberately. leaflet-rotate's setBearing applies a CSS
+  // rotate(+bearing) to the map pane, so a geographic direction lands on
+  // screen at `direction + bearing`. To bring the direction you're facing
+  // to the top of the screen you need bearing = -heading. Negation is a
+  // no-op at 0 and 180 degrees, so getting this wrong presents as "north
+  // and south are fine but east and west are swapped" - which is exactly
+  // how it surfaced in testing.
+  targetBearing = -currentHeadingDeg;
+  if (bearingRafId === null) bearingRafId = requestAnimationFrame(stepBearingAnimation);
+}
+
+// Applies a bearing while marking it as app-driven, so the follow-me
+// gesture detector doesn't mistake our own rotation for the user
+// twisting the map.
+function applyBearingFrame(bearing) {
+  applyingBearingAnimation = true;
+  try { map.setBearing(bearing); } finally { applyingBearingAnimation = false; }
+}
+
+function stepBearingAnimation(now) {
+  bearingRafId = null;
+  if (!headingLocked || targetBearing === null) { renderedBearing = null; return; }
+
+  // Frame cap. Re-schedule without doing any work, so the easing stays
+  // time-based rather than silently running faster on a 120Hz panel.
+  if (now - lastBearingFrameAt < BEARING_MIN_FRAME_MS) {
+    bearingRafId = requestAnimationFrame(stepBearingAnimation);
+    return;
+  }
+  lastBearingFrameAt = now;
+
+  if (renderedBearing === null) renderedBearing = targetBearing;
+  let delta = targetBearing - renderedBearing;
+  delta = ((delta + 180) % 360 + 360) % 360 - 180; // shortest way round, so 359->1 doesn't spin backwards
+
+  if (Math.abs(delta) < BEARING_SETTLED_DEG) {
+    renderedBearing = targetBearing;
+    applyBearingFrame(renderedBearing);
+    return; // caught up - stop until the next sensor reading wakes it
+  }
+  renderedBearing += delta * BEARING_EASE;
+  applyBearingFrame(renderedBearing);
+  bearingRafId = requestAnimationFrame(stepBearingAnimation);
+}
+
+function setHeadingLock(on) {
+  headingLocked = on;
+  document.getElementById('btn-compass').classList.toggle('active', on);
+  // Free rotation and the sensor can't both drive the bearing - whichever
+  // moved last would win, which reads as the map fighting your finger.
+  if (map.touchRotate) { on ? map.touchRotate.disable() : map.touchRotate.enable(); }
+  if (on) {
+    // Start from wherever the map currently sits so engaging the lock
+    // eases into place rather than snapping.
+    renderedBearing = map.getBearing ? map.getBearing() : 0;
+    applyHeadingLockBearing();
+    logInfo('Map locked to your heading.');
+  } else if (map.setBearing) {
+    programmaticMove(() => map.setBearing(0));
+    logInfo('Map reset to north-up - drag or two-finger twist to rotate freely.');
+  }
+}
+
+document.getElementById('btn-compass').onclick = () => setHeadingLock(!headingLocked);
 
 // ---------- GPS / live position with real-time heading arrow ----------
 let myMarker = null;
@@ -1073,6 +1285,14 @@ function setRawHeading(raw) {
 
 function applyHeadingToMarker() {
   if (!myMarker || !myMarker.setRotation) return;
+  // No map-bearing compensation here, deliberately. From leaflet-rotate's
+  // _setPos: the marker's on-screen angle is `rotation + map._bearing`
+  // when rotateWithView is set. A geographic direction lands on screen at
+  // `direction + bearing` for the same reason, so passing the raw heading
+  // is exactly what makes the arrow point the true way you're facing at
+  // any map bearing - the plugin's own addition IS the compensation.
+  // (An earlier version subtracted the bearing here, which double-
+  // corrected and made the arrow wrong in nav mode.)
   myMarker.setRotation(currentHeadingDeg * Math.PI / 180);
 }
 
@@ -1112,6 +1332,37 @@ for (let lap = -2; lap <= 2; lap++) {
 // ribbon would visibly snap sideways once per rotation instead of
 // sliding smoothly through it.
 let continuousRibbonHeading = null; // null until the first real reading, so it starts aligned instead of snapping in from 0
+// Declared here (not down with the rest of the navigation module's state,
+// where it conceptually belongs) because updateCompassNavDiamond() reads
+// it, and that gets called from updateCompassRibbon() - which can run
+// synchronously at load time if the compass was already on from a
+// previous session, well before the navigation module further down the
+// file has executed its own declarations. A `let` read before its
+// declaration line has run throws instead of just being undefined, and
+// since that happened at the top level it silently killed every line of
+// setup after it - GPS never started, the compass toggle never got wired,
+// nothing crashed loudly enough to make that obvious without the log.
+// navigatingRoute is declared here too, not down with the rest of the
+// navigation state - redrawAllDataFromStore() (called synchronously at
+// load) checks it inside a routes.forEach, and while there's an await
+// before that point which likely makes the timing safe on its own, that's
+// exactly the kind of subtle-timing argument that already produced one
+// real crash in this file. Cheaper to just declare it early and remove
+// the question entirely.
+let navigatingRoute = null;
+let navTargetBearing = null;
+
+// While navigating, the map's heading-up rotation prefers GPS course-
+// over-ground once you're actually moving, and falls back to the raw
+// compass heading otherwise (including before any movement has been
+// tracked yet, and again the moment you stop). GPS course is immune to
+// magnetic interference and more reliable during real travel, but it's
+// meaningless noise from position jitter below real walking pace or
+// without a valid heading reading - hence the speed gate. This only
+// affects which direction the MAP rotates to; the GPS marker's own arrow
+// keeps showing the phone's actual physical facing regardless (see
+// applyHeadingToMarker) - so if the two ever disagree while moving,
+// that's a real, informative signal, not a bug.
 function updateCompassRibbon() {
   if (continuousRibbonHeading === null) {
     continuousRibbonHeading = currentHeadingDeg;
@@ -1140,6 +1391,12 @@ function updateCompassRibbon() {
   const point = COMPASS_POINTS_16[Math.round(currentHeadingDeg / 22.5) % 16];
   document.getElementById('compass-heading-readout').textContent =
     `${String(whole).padStart(3, '0')}\u00B0 ${point}`;
+
+  // Reposition the nav diamond here too, not just from navigationTick -
+  // heading updates far more often than GPS fixes do, and the diamond
+  // needs to track the ribbon's own motion smoothly rather than jumping
+  // once a second.
+  updateCompassNavDiamond();
 }
 
 // Coming back from the background, re-anchor instead of animating through
@@ -1189,6 +1446,7 @@ Compass.startListening(
     setRawHeading(headingDeg);
     applyHeadingToMarker();
     updateCompassRibbon();
+    applyHeadingLockBearing();
   },
   (accuracy) => updateCompassAccuracyBadge(accuracy)
 ).then((mode) => {
@@ -1290,7 +1548,7 @@ document.getElementById('btn-reset-north').onclick = () => {
 // ---------- GPS status indicator ----------
 // The chip is just a dot: green/amber/red for "can I trust this fix".
 // The numbers behind that judgement live in the popover.
-const gpsState = { status: 'searching', accuracy: null, lat: null, lng: null, at: null, error: null };
+const gpsState = { status: 'searching', accuracy: null, lat: null, lng: null, altitude: null, at: null, error: null };
 
 function gpsQuality() {
   // "searching" covers no-fix-yet and waiting-on-a-resync - both mean the
@@ -1326,6 +1584,12 @@ function renderGpsPopover() {
       : '\u2014';
   document.getElementById('gps-popover-coords').textContent =
     gpsState.lat != null ? `${gpsState.lat.toFixed(5)}, ${gpsState.lng.toFixed(5)}` : '\u2014';
+  // GPS altitude is referenced to the WGS84 ellipsoid, not true sea level -
+  // it can be off from a topo map's elevation by tens of metres depending
+  // on location (the gap between the ellipsoid and the geoid). Labelling
+  // it plainly as GPS elevation rather than implying it's corrected.
+  document.getElementById('gps-popover-elevation').textContent =
+    typeof gpsState.altitude === 'number' ? GPS.formatDistance(gpsState.altitude / 1609.344, useMetric) : '\u2014';
   document.getElementById('gps-popover-age').textContent =
     gpsState.at ? `${Math.max(0, Math.round((Date.now() - gpsState.at) / 1000))}s ago` : '\u2014';
 }
@@ -1357,12 +1621,14 @@ GPS.startWatching((pos) => {
   gpsState.accuracy = typeof pos.accuracy === 'number' ? pos.accuracy : null;
   gpsState.lat = pos.lat;
   gpsState.lng = pos.lng;
+  gpsState.altitude = typeof pos.altitude === 'number' ? pos.altitude : null;
   gpsState.at = Date.now();
   updateGpsIndicator();
 
   if (!sensorMode && typeof pos.heading === 'number' && !isNaN(pos.heading)) {
     setRawHeading(pos.heading); // fallback path also honours north calibration
     updateCompassRibbon();
+    applyHeadingLockBearing();
   }
   Compass.updateLocation(pos.lat, pos.lng, pos.altitude); // no-op on the web fallback; feeds the native plugin's true-north correction
 
@@ -1383,21 +1649,62 @@ GPS.startWatching((pos) => {
 
   if (!hasCenteredOnFirstFix) {
     hasCenteredOnFirstFix = true;
-    map.setView([pos.lat, pos.lng], 14);
+    programmaticMove(() => map.setView([pos.lat, pos.lng], 14));
   } else if (followMe) {
-    map.panTo([pos.lat, pos.lng]);
+    programmaticMove(() => map.panTo([pos.lat, pos.lng]));
   }
 
-  if (recording) recordPoint(pos);
+  if (recording) recordPoint(pos); // fully independent of navigation below - both just read the same fix
+  if (navigatingRoute) navigationTick(pos);
+  else checkNavSuggestion(pos);
 });
 
 document.getElementById('btn-locate').onclick = () => {
   followMe = true;
-  if (myMarker) map.panTo(myMarker.getLatLng());
+  if (myMarker) programmaticMove(() => map.panTo(myMarker.getLatLng()));
   else logError('No GPS fix yet - check location permission is granted.');
   resyncGps(); // recentre and ask the location provider for a fresh fix
 };
-map.on('dragstart', () => { followMe = false; });
+// Any user-initiated map gesture stops follow-me, not just a drag.
+// Pinch-zoom and two-finger rotate previously left followMe set, so the
+// next GPS fix silently panned the map back - which is the "it jumps to a
+// different position after a while" behaviour.
+//
+// The complication is that Leaflet fires the same events for the app's own
+// programmatic moves (recentring, locate, search, navigation), so those
+// have to be marked or they'd immediately switch follow-me off themselves.
+// A counter rather than a boolean, so overlapping programmatic moves
+// can't have the inner one clear the flag while the outer is still going.
+// Detect a genuine user gesture by whether a finger is actually on the
+// map, rather than by which Leaflet event fired. Two reasons:
+//   1. leaflet-rotate's two-finger pinch/rotate handlers call _moveStart
+//      and _move directly, so they emit 'movestart' but never 'dragstart'
+//      or 'zoomstart' - which is how pinching and twisting still left
+//      follow-me on, and the map still jumped back on the next GPS fix.
+//   2. Telling programmatic moves apart by a timer is inherently racy.
+//      A pointer on the map container is not: the app's own recentring,
+//      search and navigation moves never have one, and the FAB stack and
+//      other controls sit outside the map element so their taps don't
+//      count either.
+let lastMapPointerAt = 0;
+['pointerdown', 'touchstart', 'mousedown'].forEach((ev) => {
+  map.getContainer().addEventListener(ev, () => { lastMapPointerAt = Date.now(); }, true);
+});
+map.on('movestart dragstart zoomstart rotate', () => {
+  // Generous window: a gesture's move events can trail its initial touch
+  // by a moment, and the cost of being slightly too eager here is only
+  // that follow-me switches off - which is what the user was asking for
+  // by touching the map anyway.
+  // Both conditions: a recent touch on the map AND not inside one of the
+  // app's own moves. Either alone would be enough in almost every case;
+  // together they cover the overlap (a programmatic recentre landing
+  // moments after the user happened to tap the map).
+  // Our own heading-lock rotation must never be read as a user gesture -
+  // without this, tapping the map and then rotating within the two-second
+  // window would silently switch follow-me off.
+  if (applyingBearingAnimation) return;
+  if (programmaticMoveDepth === 0 && Date.now() - lastMapPointerAt < 2000) followMe = false;
+});
 
 // ---------- Universal place search (top bar) ----------
 document.getElementById('btn-search').onclick = runTopSearch;
@@ -1419,7 +1726,7 @@ async function runTopSearch() {
       const item = document.createElement('div');
       item.className = 'result-item';
       item.textContent = r.label;
-      item.onclick = () => { map.setView([r.lat, r.lng], 13); resultsBox.classList.add('hidden'); };
+      item.onclick = () => { programmaticMove(() => map.setView([r.lat, r.lng], 13)); resultsBox.classList.add('hidden'); };
       resultsBox.appendChild(item);
     });
   } catch (e) {
@@ -1445,13 +1752,16 @@ function flagTypeById(id) {
   return FLAG_TYPES.find(t => t.id === id) || FLAG_TYPES[0];
 }
 
-function buildFlagDivIcon(iconType) {
+function buildFlagDivIcon(iconType, bound) {
   const type = flagTypeById(iconType);
+  // Bound flags get the route's color as a ring instead of the default
+  // dark border - the same shared amber every route already renders in.
+  const border = bound ? '3px solid #ffb703' : '2px solid #171d26';
   return L.divIcon({
     className: '',
     html: `<div style="
       width: 30px; height: 30px; border-radius: 50% 50% 50% 0; transform: rotate(-45deg);
-      background: ${type.color}; border: 2px solid #171d26; box-shadow: 0 2px 6px rgba(0,0,0,0.5);
+      background: ${type.color}; border: ${border}; box-shadow: 0 2px 6px rgba(0,0,0,0.5);
       display: flex; align-items: center; justify-content: center;
     "><div style="transform: rotate(45deg); width: 16px; height: 16px; color: #fff;">${ICONS[type.icon]}</div></div>`,
     iconSize: [30, 30],
@@ -1483,13 +1793,117 @@ function refreshNewFlagIconPicker() {
 refreshNewFlagIconPicker();
 document.getElementById('btn-flag-icon-toggle').onclick = () => {
   document.getElementById('flag-type-picker').classList.toggle('hidden');
+  refreshControlLayout();
 };
+
+// ---------- Control pill layout ----------
+// The flag and route menus anchor vertically to the FAB that opened them,
+// so each pops out beside its own icon rather than at a fixed spot. Done
+// by measurement rather than CSS because the FAB stack's height changes
+// with its contents, so there's no static offset that stays correct.
+function positionControlPill(pillId, anchorId) {
+  const pill = document.getElementById(pillId);
+  const anchor = document.getElementById(anchorId);
+  if (!pill || !anchor || pill.classList.contains('hidden')) return;
+  const anchorRect = anchor.getBoundingClientRect();
+  // A collapsed FAB menu leaves its buttons with no layout box - fall back
+  // to the CSS default rather than pinning the pill to the top-left.
+  if (anchorRect.height === 0) { pill.style.bottom = ''; return; }
+  const centreFromBottom = window.innerHeight - anchorRect.bottom + anchorRect.height / 2;
+  pill.style.bottom = `${Math.max(8, centreFromBottom - pill.offsetHeight / 2)}px`;
+}
+
+// The pills and the legends live on opposite sides, but a wide pill (the
+// route menu with all its buttons, or the flag menu with its icon grid
+// open) can still reach across into the legend column - so this tests
+// actual rectangle intersection instead of assuming they can't collide,
+// and lifts the legend stack only when they really do overlap.
+// The legend stack must never be pushed above this - losing the legend
+// off the top of the screen is worse than it being partly covered.
+const LEGEND_MIN_TOP_PX = 150;
+
+function updateLegendClearance() {
+  const stack = document.getElementById('map-overlays-stack');
+  if (!stack) return;
+
+  // The stack has `transition: bottom 0.2s ease` (so a lift settles
+  // smoothly rather than snapping). That's exactly what corrupted this
+  // measurement: clearing style.bottom and immediately calling
+  // getBoundingClientRect() in the same synchronous tick could read a
+  // position still mid-animation from whatever the PREVIOUS lift was,
+  // not the settled CSS value - meaning every distance computed from
+  // that point was wrong. Disabling the transition for the measurement
+  // step (and restoring it before the final value is applied) is the
+  // standard fix: the write-then-immediately-read only needs to be
+  // instantaneous, not the eventual animation to the result.
+  stack.style.transition = 'none';
+  stack.style.bottom = ''; // back to the CSS rule's value, so "natural" below is genuinely unlifted
+  stack.offsetHeight; // force a synchronous layout flush before reading anything
+  const naturalBottom = window.innerHeight - stack.getBoundingClientRect().bottom;
+
+  if (stack.getBoundingClientRect().height === 0) { stack.style.transition = ''; return; }
+
+  // Everything that can share the bottom band. The route picker is
+  // measured rather than given a fixed CSS offset like the nav HUD,
+  // because its height changes with how many routes are listed.
+  const ids = ['flag-status-pill', 'route-status-pill', 'dialog-nav-route-picker', 'nav-suggest'];
+
+  let finalBottom = naturalBottom;
+  // Iterative: raising the stack clear of one panel can move it into
+  // another, so re-measure after each lift instead of computing a single
+  // offset from the original position. Three passes is plenty for the
+  // four elements involved and guarantees termination.
+  for (let pass = 0; pass < 3; pass++) {
+    stack.style.bottom = `${finalBottom}px`;
+    const sr = stack.getBoundingClientRect();
+    let needed = null;
+    for (const id of ids) {
+      const el = document.getElementById(id);
+      if (!el || el.classList.contains('hidden')) continue;
+      const r = el.getBoundingClientRect();
+      const overlaps = r.left < sr.right && r.right > sr.left
+        && r.top < sr.bottom && r.bottom > sr.top;
+      if (overlaps) needed = Math.max(needed ?? 0, sr.bottom - r.top + 8);
+    }
+    if (needed === null) break; // clear of everything at this position
+
+    // The ceiling is whichever is LARGER: the natural (unlifted) position,
+    // or however far the top-of-screen limit allows. Taking the larger of
+    // the two - not the top-of-screen limit alone - is what actually
+    // matters here: a legend tall enough that the top-clamp computes to
+    // less than its own default position must fall back to that default,
+    // not get pushed BELOW it. Clamping to a value smaller than natural
+    // was the second bug - it could move a tall legend further down than
+    // doing nothing at all, which read as "disappeared" behind whatever
+    // it was already overlapping.
+    const topClampBottom = Math.max(0, window.innerHeight - sr.height - LEGEND_MIN_TOP_PX);
+    const ceiling = Math.max(naturalBottom, topClampBottom);
+    finalBottom = Math.min(finalBottom + needed, ceiling);
+    if (finalBottom >= ceiling) break; // clamped - accept partial overlap rather than making it worse
+  }
+
+  stack.style.bottom = `${finalBottom}px`;
+  // Restore the transition on the next frame, after this final value has
+  // already been painted once - re-enabling it in the same tick as the
+  // last write can make THAT write itself animate from stale state too.
+  requestAnimationFrame(() => { stack.style.transition = ''; });
+}
+
+// Single entry point - always reposition before measuring for overlap,
+// since the pill's own position determines whether it overlaps at all.
+function refreshControlLayout() {
+  positionControlPill('flag-status-pill', 'btn-waypoint');
+  positionControlPill('route-status-pill', 'btn-route');
+  updateLegendClearance();
+}
+window.addEventListener('resize', refreshControlLayout);
 
 function setFlagMode(on) {
   flagModeActive = on;
   document.getElementById('btn-waypoint').classList.toggle('active', on);
   document.getElementById('flag-status-pill').classList.toggle('hidden', !on);
   if (!on) document.getElementById('flag-type-picker').classList.add('hidden');
+  refreshControlLayout();
   if (on && planningRoute) cancelRoutePlanning();
   updateZoomLock();
   logInfo(on ? 'Flag mode ON - tap the map to drop flags.' : 'Flag mode off.');
@@ -1547,11 +1961,11 @@ document.getElementById('btn-redo-flag').onclick = async () => {
 };
 
 function drawWaypointMarker(wp) {
-  const marker = L.marker([wp.lat, wp.lng], { icon: buildFlagDivIcon(wp.iconType) }).addTo(map);
+  const marker = L.marker([wp.lat, wp.lng], { icon: buildFlagDivIcon(wp.iconType, !!wp.boundRouteId) }).addTo(map);
   marker.bindTooltip(wp.name, { permanent: false });
   marker.on('click', () => {
     if (planningRoute) {
-      addRoutePoint({ lat: wp.lat, lng: wp.lng });
+      addRoutePoint({ lat: wp.lat, lng: wp.lng }, wp.id);
       logInfo(`Route point ${routePoints.length} added from flag "${wp.name}".`);
       return;
     }
@@ -1564,13 +1978,138 @@ function drawWaypointMarker(wp) {
 let editingFlag = null;
 let editingFlagIconType = 'flag';
 
-function openEditFlagDialog(wp, marker) {
+// 30m to offer binding at all; if the two closest routes are within 5m of
+// each other, it's ambiguous enough to ask rather than guess.
+const BIND_PROXIMITY_MILES = 30 / 1609.344;
+const BIND_TIE_MILES = 5 / 1609.344;
+
+async function openEditFlagDialog(wp, marker) {
   editingFlag = { wp, marker };
   editingFlagIconType = wp.iconType || 'flag';
   document.getElementById('wp-name').value = wp.name;
   document.getElementById('wp-notes').value = wp.notes || '';
   refreshEditFlagIconPicker();
+  await refreshFlagBindSection();
   openOverlay('dialog-waypoint');
+}
+
+// Shared by the manual Bind button and auto-bind-on-drop below - which
+// routes (if any) is a point close enough to bind to, closest first.
+async function findBindCandidates(point) {
+  const routes = await Store.getRoutes();
+  return routes
+    .map(r => ({ route: r, proj: GPS.projectOntoRoute(point, r.points) }))
+    .filter(c => c.proj && c.proj.offRouteMiles <= BIND_PROXIMITY_MILES)
+    .sort((a, b) => a.proj.offRouteMiles - b.proj.offRouteMiles);
+}
+
+async function refreshFlagBindSection() {
+  const wp = editingFlag.wp;
+  const section = document.getElementById('wp-bind-section');
+  const statusEl = document.getElementById('wp-bind-status');
+  const bindBtn = document.getElementById('btn-bind-flag');
+  const unbindBtn = document.getElementById('btn-unbind-flag');
+  section.classList.remove('hidden');
+  // Setting display directly rather than toggling a class - guarantees
+  // exactly one of these can ever be visible, with no dependency on CSS
+  // specificity/cascade order elsewhere in the stylesheet.
+  bindBtn.style.display = 'none';
+  unbindBtn.style.display = 'none';
+
+  if (wp.boundRouteId) {
+    const routes = await Store.getRoutes();
+    const route = routes.find(r => r.id === wp.boundRouteId);
+    statusEl.textContent = route ? `Bound to route "${route.name}".` : 'Bound to a route.';
+    unbindBtn.style.display = '';
+    return;
+  }
+
+  const candidates = await findBindCandidates(wp);
+  if (!candidates.length) {
+    statusEl.textContent = 'Not bound to a route.';
+    return;
+  }
+  statusEl.textContent = candidates.length === 1
+    ? `Close to route "${candidates[0].route.name}".`
+    : 'Close to more than one route.';
+  bindBtn.style.display = '';
+  bindBtn.onclick = () => bindFlagToRoute(candidates);
+}
+
+async function bindFlagToRoute(candidates, reopenDialogAfterTie = true) {
+  let chosen = candidates[0];
+  // Only ambiguous if the two closest are within the tie threshold of
+  // each other - otherwise the closest one is an obvious enough choice
+  // that asking would just be friction.
+  if (candidates.length > 1 && (candidates[1].proj.offRouteMiles - candidates[0].proj.offRouteMiles) <= BIND_TIE_MILES) {
+    const pick = await askRouteChoice(candidates.map(c => c.route));
+    // askRouteChoice opens its own dialog, which (like every overlay)
+    // hides whatever else was open. Only reopen the flag dialog if this
+    // was called from there in the first place (the manual Bind button) -
+    // auto-bind-on-drop calls this with reopenDialogAfterTie=false, since
+    // forcing the edit dialog open after a plain drop would be a jarring,
+    // unrequested side effect.
+    if (reopenDialogAfterTie) openOverlay('dialog-waypoint');
+    if (!pick) return;
+    chosen = candidates.find(c => c.route.id === pick.id);
+  }
+  const wp = editingFlag.wp;
+  try {
+    wp.lat = chosen.proj.projected.lat;
+    wp.lng = chosen.proj.projected.lng;
+    wp.boundRouteId = chosen.route.id;
+    wp.routeDistance = chosen.proj.distanceAlongRouteMiles;
+    await Store.saveWaypoint(wp);
+    editingFlag.marker.setLatLng([wp.lat, wp.lng]);
+    // wp.iconType, not the module-level editingFlagIconType - that
+    // reflects whatever flag was last open in the edit dialog, which is
+    // wrong (and possibly stale) when this is called from a fresh drop
+    // instead of from editing this specific flag.
+    editingFlag.marker.setIcon(buildFlagDivIcon(wp.iconType, true));
+    logInfo(`Flag "${wp.name}" bound to route "${chosen.route.name}".`);
+  } catch (e) {
+    logError(`Failed to bind flag: ${e.message}`);
+  }
+  // Only refresh the bind-section UI if the flag dialog is actually open -
+  // skip it entirely when this was called from a fresh drop, where there's
+  // no dialog showing at all to update.
+  if (!document.getElementById('dialog-waypoint').classList.contains('hidden')) {
+    await refreshFlagBindSection();
+  }
+}
+
+document.getElementById('btn-unbind-flag').onclick = async () => {
+  const wp = editingFlag.wp;
+  try {
+    wp.boundRouteId = null;
+    wp.routeDistance = null;
+    await Store.saveWaypoint(wp);
+    editingFlag.marker.setIcon(buildFlagDivIcon(editingFlagIconType, false));
+    logInfo(`Flag "${wp.name}" unbound from its route.`);
+  } catch (e) {
+    logError(`Failed to unbind flag: ${e.message}`);
+  }
+  await refreshFlagBindSection();
+};
+
+// Generic "pick one of these routes" prompt - only needed for the near-tie
+// binding case above, but written generically in case something else
+// wants a route picker later.
+function askRouteChoice(routes) {
+  return new Promise((resolve) => {
+    const list = document.getElementById('route-choice-list');
+    list.innerHTML = '';
+    routes.forEach((r) => {
+      const btn = document.createElement('button');
+      btn.className = 'btn-secondary full-width';
+      btn.style.marginBottom = '8px';
+      btn.textContent = r.name;
+      btn.onclick = () => { closeOverlay('dialog-route-choice'); resolve(r); };
+      list.appendChild(btn);
+    });
+    document.getElementById('btn-route-choice-cancel').onclick = () => { closeOverlay('dialog-route-choice'); resolve(null); };
+    openOverlay('dialog-route-choice');
+  });
 }
 
 function refreshEditFlagIconPicker() {
@@ -1584,11 +2123,27 @@ document.getElementById('btn-save-waypoint').onclick = async () => {
   if (!editingFlag) return;
   const newName = document.getElementById('wp-name').value.trim() || editingFlag.wp.name;
   const newNotes = document.getElementById('wp-notes').value;
+  // Reject a name another flag already has. Checked here rather than in
+  // dataStore so the dialog can stay open with the text still in the
+  // field, instead of silently discarding what was typed.
+  const allWaypoints = await Store.getWaypoints();
+  const clash = allWaypoints.some(w => w.id !== editingFlag.wp.id
+    && (w.name || '').trim().toLowerCase() === newName.trim().toLowerCase());
+  if (clash) {
+    await showAlert('Name already used', `Another flag is already called "${newName}". Pick a different name.`);
+    openOverlay('dialog-waypoint'); // showAlert's dialog closed this one
+    return;
+  }
   try {
-    const updated = { ...editingFlag.wp, name: newName, notes: newNotes, iconType: editingFlagIconType };
-    await Store.saveWaypoint(updated);
+    // Mutate in place, don't spread into a new object - the marker's click
+    // handler closed over this exact wp reference when it was drawn, and
+    // only sees future changes if this same object is updated, not a copy.
+    // A new object here is what left the rename dialog showing the name
+    // from whenever the marker was last drawn, not the last save.
+    Object.assign(editingFlag.wp, { name: newName, notes: newNotes, iconType: editingFlagIconType });
+    await Store.saveWaypoint(editingFlag.wp);
     editingFlag.marker.setTooltipContent(newName);
-    editingFlag.marker.setIcon(buildFlagDivIcon(editingFlagIconType));
+    editingFlag.marker.setIcon(buildFlagDivIcon(editingFlagIconType, !!editingFlag.wp.boundRouteId));
     logInfo(`Flag "${newName}" saved.`);
   } catch (e) {
     logError(`Failed to save flag: ${e.message}`);
@@ -1632,12 +2187,18 @@ async function renumberDefaultFlags() {
 
 // ---------- Unified data layer redraw ----------
 let sessionOverlayLines = [];
+// Keyed by route id, populated fresh on every redraw - lets the proximity
+// flow animation below find "the visible line for route X" without
+// having to re-derive it, since sessionOverlayLines is just a flat list
+// of every layer with no way to tell which route each one belongs to.
+let routeVisibleLineById = new Map();
 
 function clearAllDataLayers() {
   flagMarkers.forEach(m => map.removeLayer(m));
   flagMarkers.clear();
   sessionOverlayLines.forEach(l => map.removeLayer(l));
   sessionOverlayLines = [];
+  routeVisibleLineById = new Map();
 }
 
 async function redrawAllDataFromStore() {
@@ -1646,6 +2207,10 @@ async function redrawAllDataFromStore() {
     const [waypoints, routes, tracks] = await Promise.all([Store.getWaypoints(), Store.getRoutes(), Store.getTracks()]);
     waypoints.forEach(drawWaypointMarker);
     routes.forEach((r) => {
+      // The actively-navigated route draws its own split traveled/remaining
+      // lines (see navigationTick) instead of this static rendering - skip
+      // it here so the two don't draw on top of each other.
+      if (navigatingRoute && navigatingRoute.id === r.id) return;
       let dist = 0;
       for (let i = 1; i < r.points.length; i++) dist += GPS.distanceMiles(r.points[i - 1], r.points[i]);
       const latlngs = r.points.map(p => [p.lat, p.lng]);
@@ -1673,6 +2238,7 @@ async function redrawAllDataFromStore() {
       hitLine.addTo(map);
       visibleLine.addTo(map);
       sessionOverlayLines.push(hitLine, visibleLine);
+      routeVisibleLineById.set(r.id, visibleLine);
     });
     tracks.forEach((t) => {
       let dist = 0;
@@ -1737,13 +2303,26 @@ document.getElementById('btn-route-details-rename').onclick = async () => {
   }
 };
 
+// A flag shouldn't vanish just because the route it was bound to did -
+// this clears the binding and leaves the flag exactly where it is.
+async function unbindFlagsFromRoute(routeId) {
+  const waypoints = await Store.getWaypoints();
+  for (const wp of waypoints.filter(w => w.boundRouteId === routeId)) {
+    wp.boundRouteId = null;
+    wp.routeDistance = null;
+    await Store.saveWaypoint(wp);
+  }
+}
+
 document.getElementById('btn-route-details-delete').onclick = async () => {
   if (!routeDetailsContext) return;
   const route = routeDetailsContext;
   const ok = await askConfirm('Delete route?', `Delete saved route "${route.name}"?`);
   if (!ok) { openOverlay('sheet-route-details'); return; }
   try {
+    await unbindFlagsFromRoute(route.id);
     await Store.deleteRoute(route.id);
+    if (nearbyRouteForSuggestion && nearbyRouteForSuggestion.route.id === route.id) hideNavSuggestion(); // don't leave a Start-navigating button pointed at a route that's gone
     logInfo(`Route "${route.name}" deleted.`);
     routeDetailsContext = null;
     await redrawAllDataFromStore();
@@ -1754,10 +2333,428 @@ document.getElementById('btn-route-details-delete').onclick = async () => {
   closeOverlay('sheet-route-details');
 };
 
+// ---------- Route navigation ----------
+// Fully independent of track recording (both just read the GPS callback,
+// see the "if (navigatingRoute) navigationTick(pos);" line there) and of
+// route planning (can't be entered while planningRoute is true anyway,
+// since Start only appears in a saved route's own detail sheet).
+const NAV_START_PROXIMITY_MILES = 50 / 1609.344;
+const NAV_ARRIVAL_MILES = 15 / 1609.344;
+const NAV_WAYPOINT_REACHED_MILES = 15 / 1609.344;
+const NAV_OFF_ROUTE_WARN_MILES = 30 / 1609.344;
+
+let navBoundFlagsSorted = []; // bound flags on this route, ascending by routeDistance
+let navNextWaypointIndex = 0; // index into navBoundFlagsSorted - only ever advances
+let navTraveledLine = null, navRemainingLine = null;
+
+// A single-button variant of the existing Yes/No confirm dialog, reused
+// here rather than building a whole new modal type just for "waypoint
+// reached" / "you've arrived" notifications.
+function showAlert(title, message) {
+  return new Promise((resolve) => {
+    document.getElementById('confirm-title').textContent = title;
+    document.getElementById('confirm-message').textContent = message;
+    const yesBtn = document.getElementById('btn-confirm-yes');
+    const noBtn = document.getElementById('btn-confirm-no');
+    const prevYesText = yesBtn.textContent;
+    yesBtn.textContent = 'OK';
+    noBtn.classList.add('hidden');
+    openOverlay('dialog-confirm');
+    const cleanup = () => {
+      yesBtn.onclick = null;
+      yesBtn.textContent = prevYesText;
+      noBtn.classList.remove('hidden');
+      closeOverlay('dialog-confirm');
+    };
+    yesBtn.onclick = () => { cleanup(); resolve(); };
+  });
+}
+
+// Shared by both the manual "Start navigation" button in the route
+// details sheet and the automatic proximity suggestion below - the
+// proximity gate itself lives in whichever caller needs to decide what to
+// tell the user if they're too far (the button shows an alert; the
+// automatic path just doesn't offer the button in the first place).
+async function startNavigatingRoute(route, proj) {
+  navigatingRoute = route;
+  const waypoints = await Store.getWaypoints();
+  navBoundFlagsSorted = waypoints
+    .filter(w => w.boundRouteId === route.id)
+    .sort((a, b) => a.routeDistance - b.routeDistance);
+  navNextWaypointIndex = navBoundFlagsSorted.findIndex(w => w.routeDistance >= proj.distanceAlongRouteMiles);
+  if (navNextWaypointIndex === -1) navNextWaypointIndex = navBoundFlagsSorted.length; // already past every bound flag
+
+  hideNavSuggestion();
+  document.getElementById('nav-hud').classList.remove('hidden');
+  document.body.classList.add('nav-hud-active'); // lifts the legend stack clear of the HUD
+  refreshControlLayout();
+  programmaticMove(() => map.setView([gpsState.lat, gpsState.lng], 17));
+  followMe = true; // starting navigation re-engages follow, even if a drag had turned it off earlier
+  // Heading lock defaults ON when navigation starts - following a route is
+  // exactly the case where heading-up is what you want. Whatever the lock
+  // was set to beforehand is remembered and restored on stop, so this
+  // doesn't quietly overwrite a deliberate preference for browsing
+  // north-up; it just doesn't make you set it every single time.
+  headingLockBeforeNav = headingLocked;
+  if (!headingLocked) setHeadingLock(true);
+  await redrawAllDataFromStore(); // hides the route's normal render now that navigatingRoute is set
+  navigationTick({ lat: gpsState.lat, lng: gpsState.lng });
+  logInfo(`Navigating "${route.name}".`);
+}
+
+document.getElementById('btn-route-details-navigate').onclick = async () => {
+  if (!routeDetailsContext) return;
+  const route = routeDetailsContext;
+  if (gpsState.lat == null) { logError('No GPS fix yet - can\'t check your distance to the route.'); return; }
+
+  const proj = GPS.projectOntoRoute({ lat: gpsState.lat, lng: gpsState.lng }, route.points);
+  if (!proj || proj.offRouteMiles > NAV_START_PROXIMITY_MILES) {
+    await showAlert('Too far from the route', `Get within ${GPS.formatDistance(NAV_START_PROXIMITY_MILES, useMetric)} of "${route.name}" to start navigating it.`);
+    return;
+  }
+  closeOverlay('sheet-route-details');
+  await startNavigatingRoute(route, proj);
+};
+
+// ---------- Automatic "you're near a route" suggestion ----------
+// No taps needed to discover this: every GPS tick (see the main callback
+// below) checks proximity to every saved route whenever nothing's
+// currently being navigated, and surfaces a one-tap Start button the
+// moment you're close enough to actually start - same proximity rule
+// startNavigatingRoute itself uses, so if the button appears, tapping it
+// always works.
+let nearbyRouteForSuggestion = null; // {route, proj} or null
+let flowingRouteId = null; // whichever route currently has the animation applied, so it can be cleared when proximity moves elsewhere
+
+function setFlowingRoute(routeId) {
+  if (flowingRouteId === routeId) return;
+  if (flowingRouteId) routeVisibleLineById.get(flowingRouteId)?.getElement()?.classList.remove('route-line-flowing');
+  flowingRouteId = routeId;
+  if (routeId) routeVisibleLineById.get(routeId)?.getElement()?.classList.add('route-line-flowing');
+}
+
+function hideNavSuggestion() {
+  nearbyRouteForSuggestion = null;
+  nearbyRoutes = [];
+  clearPreviewRoute(); // otherwise a previewed route keeps animating after walking out of range
+  document.getElementById('dialog-nav-route-picker').classList.add('hidden');
+  document.getElementById('nav-suggest').classList.add('hidden');
+  setFlowingRoute(null);
+  refreshControlLayout(); // the bar just vanished - let the legends drop back down
+}
+
+// Every saved route currently within starting range, nearest first. The
+// suggestion bar shows a direct Start for a single route, and opens the
+// picker instead when several are in range - which is common where routes
+// share a trailhead, and where silently picking "the closest" would be a
+// coin flip between two paths going opposite directions.
+let nearbyRoutes = [];
+
+async function checkNavSuggestion(pos) {
+  if (navigatingRoute || planningRoute || flagModeActive) { hideNavSuggestion(); return; }
+  // Don't re-shuffle the list out from under the picker while it's open -
+  // entries moving or renumbering mid-selection would be disorienting.
+  if (!document.getElementById('dialog-nav-route-picker').classList.contains('hidden')) return;
+
+  const routes = await Store.getRoutes();
+  nearbyRoutes = routes
+    .map(route => ({ route, proj: GPS.projectOntoRoute(pos, route.points) }))
+    .filter(r => r.proj && r.proj.offRouteMiles <= NAV_START_PROXIMITY_MILES)
+    .sort((a, b) => a.proj.offRouteMiles - b.proj.offRouteMiles);
+
+  nearbyRouteForSuggestion = nearbyRoutes[0] || null;
+  const suggestEl = document.getElementById('nav-suggest');
+  // Track visibility across calls: this runs on every GPS fix, and only a
+  // change in whether the bar is shown can affect the legend stack.
+  const wasVisible = !suggestEl.classList.contains('hidden');
+  if (!nearbyRoutes.length) {
+    suggestEl.classList.add('hidden');
+    setFlowingRoute(null);
+    if (wasVisible) refreshControlLayout();
+    return;
+  }
+
+  const multiple = nearbyRoutes.length > 1;
+  document.getElementById('nav-suggest-label').textContent = multiple
+    ? `${nearbyRoutes.length} routes nearby`
+    : `Start navigating "${nearbyRoutes[0].route.name}"`;
+  document.getElementById('btn-nav-suggest-start').textContent = multiple ? 'Choose' : 'Start';
+  suggestEl.classList.remove('hidden');
+  if (!wasVisible) requestAnimationFrame(refreshControlLayout); // bar just appeared - lift the legends clear of it
+  // Only animate a single candidate - flowing every nearby route at once
+  // would just be noise, and which one is "the" route is exactly the
+  // question the picker exists to answer.
+  setFlowingRoute(multiple ? null : nearbyRoutes[0].route.id);
+}
+
+document.getElementById('btn-nav-suggest-start').onclick = async () => {
+  if (!nearbyRoutes.length) return;
+  if (nearbyRoutes.length === 1) {
+    const { route, proj } = nearbyRoutes[0];
+    await startNavigatingRoute(route, proj);
+    return;
+  }
+  openNavRoutePicker();
+};
+
+// ---------- Nearby-route picker ----------
+// Previewing is deliberately non-committal: it restyles the line and moves
+// the map, but changes no navigation state, so cycling through options
+// costs nothing and Cancel genuinely undoes everything.
+let previewRouteId = null;
+
+// Preview marks the selected route with the flowing-dash animation
+// (setFlowingRoute) rather than making it solid. Every route stays dashed
+// throughout, so the only thing that distinguishes the selection is
+// motion - which reads as "this is the live one" without the selected
+// route changing shape or weight as you cycle through the list.
+// Frames the whole route rather than just panning to the nearest point on
+// it: zoom is derived from the route's own extent, so a short loop fills
+// the screen and a long trail zooms out to fit - which is what makes
+// cycling through the list actually comparable.
+function fitMapToRoute(route) {
+  if (!route.points || route.points.length < 2) return;
+  const bounds = L.latLngBounds(route.points.map(p => [p.lat, p.lng]));
+  // Asymmetric padding: the top bar covers the top of the map, and the
+  // picker panel covers the bottom, so an evenly-padded fit would centre
+  // the route behind them. The panel's height is measured rather than
+  // assumed because it grows with the number of routes listed.
+  const picker = document.getElementById('dialog-nav-route-picker');
+  const pickerH = picker.classList.contains('hidden') ? 60 : picker.offsetHeight + 30;
+  programmaticMove(() => map.fitBounds(bounds, {
+    paddingTopLeft: [30, 120],
+    paddingBottomRight: [30, pickerH],
+    // Without a cap, a very short route zooms to maximum detail, which
+    // loses all surrounding context and makes it hard to tell where the
+    // route actually is relative to you.
+    maxZoom: 16,
+    animate: true
+  }));
+}
+
+// Fades every route except the selected one, so the selection reads
+// clearly however many other routes happen to be drawn nearby. Passing
+// null restores them all to full opacity.
+function applyPreviewDimming(selectedId) {
+  routeVisibleLineById.forEach((line, id) => {
+    line.setStyle({ opacity: selectedId && id !== selectedId ? 0.2 : 1 });
+  });
+}
+
+// Applies the flowing-dash + pulsing-glow treatment to exactly one route.
+// Toggled across every line rather than tracked incrementally, so
+// switching selection can't leave the previous one still glowing.
+function setSelectedRouteStyling(routeId) {
+  routeVisibleLineById.forEach((line, id) => {
+    const el = line.getElement();
+    if (el) el.classList.toggle('route-line-selected', id === routeId);
+  });
+}
+
+function setPreviewRoute(routeId) {
+  previewRouteId = routeId;
+  // The picker's own selected styling replaces the single-route flowing
+  // hint - otherwise a route could carry both animations at once.
+  setFlowingRoute(null);
+  setSelectedRouteStyling(routeId);
+  applyPreviewDimming(routeId);
+  if (!routeId) return;
+  const entry = nearbyRoutes.find(r => r.route.id === routeId);
+  if (entry) fitMapToRoute(entry.route);
+  renderNavRoutePickerList();
+}
+
+function clearPreviewRoute() {
+  previewRouteId = null;
+  setFlowingRoute(null);
+  setSelectedRouteStyling(null);
+  applyPreviewDimming(null);
+}
+
+function renderNavRoutePickerList() {
+  const list = document.getElementById('nav-route-picker-list');
+  list.innerHTML = '';
+  nearbyRoutes.forEach(({ route, proj }) => {
+    const li = document.createElement('li');
+    li.className = route.id === previewRouteId ? 'selected' : '';
+    li.innerHTML = `<span>${route.name}<br><small>${GPS.formatDistance(proj.offRouteMiles, useMetric)} away, ${GPS.formatDistance(proj.totalRouteMiles, useMetric)} long</small></span>`;
+    li.onclick = () => setPreviewRoute(route.id);
+    list.appendChild(li);
+  });
+}
+
+// Shown/hidden directly rather than through openOverlay/closeOverlay:
+// those add the dimming backdrop and force-hide every other overlay,
+// both of which defeat the point here - the map needs to stay fully
+// visible and undimmed while routes are being compared on it.
+function setNavRoutePickerOpen(open) {
+  document.getElementById('dialog-nav-route-picker').classList.toggle('hidden', !open);
+  // Measured after the class change so the panel has (or has lost) its
+  // layout box by the time the legend stack is checked against it.
+  requestAnimationFrame(refreshControlLayout);
+  // The suggestion bar sits in the same spot and says the same thing, so
+  // it steps aside while the picker is up rather than stacking with it.
+  document.getElementById('nav-suggest').classList.toggle('hidden', open || !nearbyRoutes.length);
+}
+
+function openNavRoutePicker() {
+  setPreviewRoute(nearbyRoutes[0].route.id); // preview the nearest immediately, so the panel is never a dead list
+  setNavRoutePickerOpen(true);
+}
+
+document.getElementById('btn-nav-picker-cancel').onclick = () => {
+  clearPreviewRoute();
+  setNavRoutePickerOpen(false);
+};
+
+document.getElementById('btn-nav-picker-confirm').onclick = async () => {
+  const entry = nearbyRoutes.find(r => r.route.id === previewRouteId);
+  clearPreviewRoute(); // startNavigatingRoute redraws anyway, but don't leave a preview style behind if it bails
+  setNavRoutePickerOpen(false);
+  if (entry) await startNavigatingRoute(entry.route, entry.proj);
+};
+
+async function stopNavigation(reason) {
+  const route = navigatingRoute;
+  navigatingRoute = null;
+  navBoundFlagsSorted = [];
+  navNextWaypointIndex = 0;
+  navTargetBearing = null;
+  if (navTraveledLine) { map.removeLayer(navTraveledLine); navTraveledLine = null; }
+  if (navRemainingLine) { map.removeLayer(navRemainingLine); navRemainingLine = null; }
+  document.getElementById('nav-hud').classList.add('hidden');
+  document.body.classList.remove('nav-hud-active');
+  refreshControlLayout();
+  updateCompassNavDiamond();
+  // Restore whatever the lock was before navigation turned it on, rather
+  // than forcing either state - setHeadingLock(false) handles the actual
+  // reset to north-up.
+  if (headingLockBeforeNav !== null && headingLocked !== headingLockBeforeNav) setHeadingLock(headingLockBeforeNav);
+  headingLockBeforeNav = null;
+  await redrawAllDataFromStore(); // restores the route's normal render
+  if (route) logInfo(`Navigation stopped${reason ? ` (${reason})` : ''}.`);
+}
+document.getElementById('btn-nav-stop').onclick = () => stopNavigation('stopped');
+
+function navigationTick(pos) {
+  if (!navigatingRoute) return;
+  const proj = GPS.projectOntoRoute(pos, navigatingRoute.points);
+  if (!proj) return;
+
+  // Keep centred on the current position while navigating, but honour
+  // follow-me: an earlier version recentred unconditionally so that a
+  // stale drag from before navigation couldn't disable it, but that also
+  // meant panning away mid-navigation to look at something got yanked
+  // back a second later with no way to stop it. Starting navigation now
+  // re-enables follow-me explicitly, which solves the stale-drag problem
+  // without taking away the ability to pan.
+  if (followMe) programmaticMove(() => map.panTo([pos.lat, pos.lng], { animate: true, duration: 0.3 }));
+
+  // Split polyline: everything behind the projected point dims, ahead
+  // stays the normal route color - the "eating away" effect. Created once
+  // and then updated in place on every later tick: the previous version
+  // removed and re-added both layers every GPS fix, which meant tearing
+  // down and rebuilding two full SVG path elements once a second, and on
+  // a long route that's enough main-thread work to visibly jank
+  // everything else (including how promptly the position marker appears
+  // to move). setLatLngs just rewrites the existing path's geometry.
+  const points = navigatingRoute.points;
+  const traveled = points.slice(0, proj.segmentIndex + 1).concat([proj.projected]).map(p => [p.lat, p.lng]);
+  const remaining = [proj.projected].concat(points.slice(proj.segmentIndex + 1)).map(p => [p.lat, p.lng]);
+  if (navTraveledLine) {
+    navTraveledLine.setLatLngs(traveled);
+  } else {
+    navTraveledLine = L.polyline(traveled, { color: '#8a93a3', weight: 4, opacity: 0.7 }).addTo(map);
+  }
+  if (navRemainingLine) {
+    navRemainingLine.setLatLngs(remaining);
+  } else {
+    navRemainingLine = L.polyline(remaining, { color: '#ffb703', weight: 4 }).addTo(map);
+  }
+
+  document.getElementById('nav-remaining').textContent = GPS.formatDistance(proj.remainingMiles, useMetric);
+
+  const offRouteEl = document.getElementById('nav-off-route-warning');
+  if (proj.offRouteMiles > NAV_OFF_ROUTE_WARN_MILES) {
+    offRouteEl.textContent = `${GPS.formatDistance(proj.offRouteMiles, useMetric)} off route`;
+    offRouteEl.classList.remove('hidden');
+  } else {
+    offRouteEl.classList.add('hidden');
+  }
+
+  // Advance past any bound flag close enough to count as reached - a while
+  // loop (not if) in case GPS jumped far enough in one fix to pass more
+  // than one at once. navNextWaypointIndex only ever increases, so an
+  // already-announced flag can't trigger a second alert.
+  while (
+    navNextWaypointIndex < navBoundFlagsSorted.length &&
+    proj.distanceAlongRouteMiles >= navBoundFlagsSorted[navNextWaypointIndex].routeDistance - NAV_WAYPOINT_REACHED_MILES
+  ) {
+    const reached = navBoundFlagsSorted[navNextWaypointIndex];
+    navNextWaypointIndex++;
+    showAlert('Waypoint reached', `You reached "${reached.name}".`);
+  }
+
+  const nextWaypoint = navBoundFlagsSorted[navNextWaypointIndex] || null;
+  const nwBlock = document.getElementById('nav-next-waypoint-block');
+  if (nextWaypoint) {
+    nwBlock.classList.remove('hidden');
+    document.getElementById('nav-next-waypoint').textContent =
+      GPS.formatDistance(Math.max(0, nextWaypoint.routeDistance - proj.distanceAlongRouteMiles), useMetric);
+    // GPS.bearingDegrees is pure lat/lng geometry, so it's inherently
+    // true-north-referenced - but currentHeadingDeg (and therefore
+    // continuousRibbonHeading, which updateCompassNavDiamond compares
+    // this against) carries whatever manual north calibration the user
+    // has set. Without applying the same offset here, the two values are
+    // in different reference frames, and the diamond lands off by
+    // whatever that offset is - which is exactly why it was in the wrong
+    // spot on the ribbon.
+    navTargetBearing = ((GPS.bearingDegrees(pos, nextWaypoint) + compassNorthOffset) % 360 + 360) % 360;
+  } else {
+    nwBlock.classList.add('hidden');
+    navTargetBearing = null;
+  }
+  updateCompassNavDiamond();
+
+  if (proj.remainingMiles <= NAV_ARRIVAL_MILES) {
+    const name = navigatingRoute.name;
+    stopNavigation('arrived').then(() => showAlert('Arrived', `You've reached the end of "${name}".`));
+  }
+}
+
+// Positions the glowing diamond on the ribbon's sliding track at
+// navTargetBearing - same coordinate space as the tick marks (degrees *
+// COMPASS_RIBBON_PX_PER_DEG), but as one continuously-repositioned
+// element rather than repeated across every lap, since it tracks a
+// single live target rather than a fixed compass point.
+function updateCompassNavDiamond() {
+  const diamond = document.getElementById('compass-nav-diamond');
+  if (navTargetBearing === null || continuousRibbonHeading === null) {
+    diamond.classList.add('hidden');
+    return;
+  }
+  diamond.classList.remove('hidden');
+  // Shift the raw bearing to whichever 360-equivalent value sits closest
+  // to the current (unwrapped, possibly-multi-lap) ribbon heading, so the
+  // diamond sits at the correct relative offset from the fixed pointer
+  // instead of jumping to a distant lap copy.
+  let delta = navTargetBearing - (((continuousRibbonHeading % 360) + 360) % 360);
+  delta = ((delta + 180) % 360 + 360) % 360 - 180;
+  const trackPos = continuousRibbonHeading + delta;
+  diamond.style.left = `${trackPos * COMPASS_RIBBON_PX_PER_DEG}px`;
+}
+
 // ---------- Route planning ----------
 let planningRoute = false;
 let routePoints = [];
 let routeRedoStack = []; // points popped by Undo, restorable by Redo until a new point is added
+// Parallel to routePoints - the flag id a point came from, or null for a
+// plain map tap. Only used at save time, to auto-bind whichever flags
+// were used to build the route (the "connect flags" method from the
+// README - there's no separate code path for it, tapping a flag while
+// planning just adds a point at that flag's location, so this is how
+// those points get remembered as flag-origin rather than arbitrary taps).
+let routePointFlagIds = [];
 let routeLine = null;
 let routeLineHitbox = null;
 let editingRouteId = null;
@@ -1768,11 +2765,13 @@ function startRoutePlanning(prefillPoints = [], existingId = null) {
   editingRouteId = existingId;
   routePoints = [...prefillPoints];
   routeRedoStack = [];
+  routePointFlagIds = prefillPoints.map(() => null); // re-editing a saved route doesn't know which points were flags
   if (routeLine) { map.removeLayer(routeLine); routeLine = null; }
   if (routeLineHitbox) { map.removeLayer(routeLineHitbox); routeLineHitbox = null; }
   if (routePoints.length) updateRouteLine();
   updateUndoRedoButtons();
   document.getElementById('route-status-pill').classList.remove('hidden');
+  refreshControlLayout();
   document.getElementById('btn-route').classList.add('active');
   updateZoomLock();
   logInfo(existingId ? 'Editing saved route - tap the map or a flag to add points, Finish to re-save.' : 'Route planning started - tap the map or a flag to add points.');
@@ -1782,11 +2781,16 @@ function cancelRoutePlanning() {
   planningRoute = false;
   editingRouteId = null;
   routeRedoStack = [];
+  routePointFlagIds = [];
+  routePoints = []; // was previously only reset when STARTING a route, so a
+                    // finished route's points lingered in memory afterwards
+  document.getElementById('route-distance').textContent = GPS.formatDistance(0, useMetric);
   document.getElementById('btn-route').classList.remove('active');
   updateZoomLock();
   if (routeLine) { map.removeLayer(routeLine); routeLine = null; }
   if (routeLineHitbox) { map.removeLayer(routeLineHitbox); routeLineHitbox = null; }
   document.getElementById('route-status-pill').classList.add('hidden');
+  refreshControlLayout();
 }
 
 // Tapping the route FAB while already in route mode now cancels it - the
@@ -1802,8 +2806,9 @@ function updateUndoRedoButtons() {
   document.getElementById('btn-redo-route').classList.toggle('disabled', routeRedoStack.length === 0);
 }
 
-function addRoutePoint(point) {
+function addRoutePoint(point, flagId = null) {
   routePoints.push(point);
+  routePointFlagIds.push(flagId);
   routeRedoStack = []; // a fresh point invalidates any pending redo history
   updateRouteLine();
   updateUndoRedoButtons();
@@ -1811,14 +2816,16 @@ function addRoutePoint(point) {
 
 document.getElementById('btn-undo-route').onclick = () => {
   if (!routePoints.length) return;
-  routeRedoStack.push(routePoints.pop());
+  routeRedoStack.push({ point: routePoints.pop(), flagId: routePointFlagIds.pop() });
   updateRouteLine();
   updateUndoRedoButtons();
   logInfo(`Route point undone (${routePoints.length} remaining).`);
 };
 document.getElementById('btn-redo-route').onclick = () => {
   if (!routeRedoStack.length) return;
-  routePoints.push(routeRedoStack.pop());
+  const { point, flagId } = routeRedoStack.pop();
+  routePoints.push(point);
+  routePointFlagIds.push(flagId);
   updateRouteLine();
   updateUndoRedoButtons();
   logInfo(`Route point redone (${routePoints.length} total).`);
@@ -1838,11 +2845,31 @@ function updateRouteLine() {
 
 document.getElementById('btn-finish-route').onclick = async () => {
   if (routePoints.length < 2) { logError('Need at least 2 points to save a route - tap the map more before finishing.'); return; }
-  const name = await askName('Name this route', 'My Route');
+  const existingRoutes = await Store.getRoutes();
+  const takenNames = existingRoutes.filter(r => r.id !== editingRouteId).map(r => r.name);
+  const name = await askUniqueName('Name this route', 'My Route', takenNames, 'route');
   if (name === null) return;
   try {
     await Store.saveRoute({ id: editingRouteId, name, points: routePoints });
     logInfo(editingRouteId ? `Route "${name}" updated with ${routePoints.length} points.` : `Route "${name}" saved with ${routePoints.length} points.`);
+    // Auto-bind: any point that came from tapping a flag (routePointFlagIds
+    // tracks this) gets bound to the route just saved, with its exact
+    // distance-along-route - no projection needed here, since the point
+    // IS the route's own vertex at that index.
+    const savedRoutes = await Store.getRoutes();
+    const savedRoute = editingRouteId ? savedRoutes.find(r => r.id === editingRouteId) : savedRoutes[savedRoutes.length - 1];
+    if (savedRoute) {
+      for (let i = 0; i < routePointFlagIds.length; i++) {
+        const flagId = routePointFlagIds[i];
+        if (!flagId) continue;
+        const waypoints = await Store.getWaypoints();
+        const wp = waypoints.find(w => w.id === flagId);
+        if (!wp) continue;
+        wp.boundRouteId = savedRoute.id;
+        wp.routeDistance = GPS.distanceAlongRouteToIndex(routePoints, i);
+        await Store.saveWaypoint(wp);
+      }
+    }
     await redrawAllDataFromStore();
   } catch (e) {
     logError(`Failed to save route: ${e.message}`);
@@ -1867,11 +2894,23 @@ async function handleMapTap(latlng) {
       const existing = await Store.getWaypoints();
       const num = nextDefaultFlagNumber(existing);
       const wp = await Store.saveWaypoint({ lat: e.latlng.lat, lng: e.latlng.lng, name: `Flag ${num}`, notes: '', iconType: currentFlagIconType });
-      drawWaypointMarker(wp);
+      const marker = drawWaypointMarker(wp);
       flagUndoStack.push({ type: 'add', wp });
       flagRedoStack = [];
       updateFlagUndoRedoButtons();
       logInfo(`Flag "${wp.name}" dropped.`);
+
+      // Dropped directly on (or near) a route's own hit line - auto-bind
+      // immediately rather than making the user open the flag and tap
+      // Bind manually. Same candidate logic as the manual path (closest
+      // route wins, tie-picker if two are nearly equidistant), just
+      // triggered at drop time instead of from the edit dialog.
+      const candidates = await findBindCandidates(wp);
+      if (candidates.length) {
+        editingFlag = { wp, marker }; // bindFlagToRoute needs this set, same as if the dialog had opened it
+        await bindFlagToRoute(candidates, false);
+        editingFlag = null;
+      }
     } catch (err) {
       logError(`Failed to drop flag: ${err.message}`);
     }
@@ -1898,6 +2937,17 @@ let recording = false;
 let trackPoints = [];
 let trackLine = null;
 let trackStart = null;
+let trackDistanceMiles = 0; // running total, so recordPoint doesn't re-sum the whole track every fix
+let trackRejectedCount = 0;
+
+// Fix-quality gates for RECORDING only - the live marker still shows every
+// fix, because seeing a bad one jump around is useful feedback, whereas
+// silently baking it into a saved track corrupts that track's distance and
+// shape permanently. Thresholds are deliberately permissive: the goal is
+// to drop obvious garbage, not to second-guess real movement under tree
+// cover, where accuracy legitimately degrades.
+const RECORD_MAX_ACCURACY_M = 100;   // beyond this the fix is nearly meaningless
+const RECORD_MAX_SPEED_MPS = 45;     // ~160 km/h; anything faster is a GPS teleport, not travel
 
 document.getElementById('btn-record').onclick = () => {
   if (recording) stopRecordingFlow();
@@ -1909,6 +2959,11 @@ document.getElementById('btn-start-record-no').onclick = () => closeOverlay('dia
 function startRecording() {
   recording = true;
   trackPoints = [];
+  trackDistanceMiles = 0;
+  trackRejectedCount = 0;
+  // Defensive: incremental appending assumes a fresh line, so make sure a
+  // stray one from an interrupted session can't be appended to.
+  if (trackLine) { map.removeLayer(trackLine); trackLine = null; }
   trackStart = Date.now();
   const btn = document.getElementById('btn-record');
   btn.classList.add('recording');
@@ -1917,16 +2972,45 @@ function startRecording() {
   logInfo('Track recording started.');
 }
 
+// Returns true if this fix is trustworthy enough to bake into a saved
+// track. Rejecting is not free - a dropped point leaves a straight line
+// across whatever really happened - so this only rejects fixes that are
+// either measurably garbage or physically impossible.
+function isFixRecordable(pos, previous) {
+  if (typeof pos.accuracy === 'number' && pos.accuracy > RECORD_MAX_ACCURACY_M) return false;
+  if (!previous) return true;
+  const dtSec = (pos.timestamp - previous.timestamp) / 1000;
+  // Non-positive or missing dt means the timestamps can't be trusted for
+  // this check; fall through rather than dividing by zero.
+  if (!(dtSec > 0)) return true;
+  const metres = GPS.distanceMiles(previous, pos) * 1609.344;
+  return (metres / dtSec) <= RECORD_MAX_SPEED_MPS;
+}
+
 function recordPoint(pos) {
-  trackPoints.push({ lat: pos.lat, lng: pos.lng, altitude: pos.altitude, timestamp: pos.timestamp });
-  if (trackLine) map.removeLayer(trackLine);
-  trackLine = L.polyline(trackPoints.map(p => [p.lat, p.lng]), { color: '#e6484f', weight: 4 }).addTo(map);
-  let dist = 0;
-  for (let i = 1; i < trackPoints.length; i++) dist += GPS.distanceMiles(trackPoints[i - 1], trackPoints[i]);
+  const previous = trackPoints[trackPoints.length - 1];
+  if (!isFixRecordable(pos, previous)) {
+    trackRejectedCount++;
+    return; // dropped from the track; the live marker still moved
+  }
+
+  const point = { lat: pos.lat, lng: pos.lng, altitude: pos.altitude, timestamp: pos.timestamp };
+  trackPoints.push(point);
+
+  // Incremental, not recomputed. The previous version destroyed and
+  // rebuilt the entire polyline and re-summed every segment on every
+  // single fix - O(n) work per point, so O(n^2) over a recording. On a
+  // multi-hour track at one fix per second that becomes thousands of
+  // points reprocessed every second. Appending one point and adding one
+  // segment's distance is O(1).
+  if (previous) trackDistanceMiles += GPS.distanceMiles(previous, point);
+  if (trackLine) trackLine.addLatLng([point.lat, point.lng]);
+  else trackLine = L.polyline([[point.lat, point.lng]], { color: '#e6484f', weight: 4 }).addTo(map);
+
   const elapsedSec = Math.floor((Date.now() - trackStart) / 1000);
   const mm = String(Math.floor(elapsedSec / 60)).padStart(2, '0');
   const ss = String(elapsedSec % 60).padStart(2, '0');
-  document.getElementById('record-stats').textContent = `${GPS.formatDistance(dist, useMetric)} · ${mm}:${ss}`;
+  document.getElementById('record-stats').textContent = `${GPS.formatDistance(trackDistanceMiles, useMetric)} · ${mm}:${ss}`;
 }
 
 async function stopRecordingFlow() {
@@ -1937,6 +3021,7 @@ async function stopRecordingFlow() {
   document.getElementById('record-status-pill').classList.add('hidden');
   if (trackLine) { map.removeLayer(trackLine); trackLine = null; }
 
+  if (trackRejectedCount) logInfo(`${trackRejectedCount} unusable GPS fix(es) were left out of this track.`);
   if (trackPoints.length < 2) { logInfo('Recording stopped - not enough points to save.'); return; }
   const name = await askName('Name this track', new Date().toLocaleDateString());
   if (name === null) { logInfo('Track discarded.'); return; }
@@ -2198,7 +3283,7 @@ async function renderDataPanel() {
       delBtn.className = 'danger';
       delBtn.onclick = async () => {
         const ok = await askConfirm('Delete route?', `Delete saved route "${r.name}"?`);
-        if (ok) { await Store.deleteRoute(r.id); logInfo(`Route "${r.name}" deleted.`); await redrawAllDataFromStore(); renderDataPanel(); }
+        if (ok) { await unbindFlagsFromRoute(r.id); await Store.deleteRoute(r.id); if (nearbyRouteForSuggestion && nearbyRouteForSuggestion.route.id === r.id) hideNavSuggestion(); logInfo(`Route "${r.name}" deleted.`); await redrawAllDataFromStore(); renderDataPanel(); }
       };
       actions.appendChild(loadBtn);
       actions.appendChild(delBtn);
