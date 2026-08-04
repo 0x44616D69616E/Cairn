@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-<title>Cairn</title>
+<title>Datum</title>
 
 <link rel="stylesheet" href="lib/leaflet/leaflet.css" />
 <link rel="stylesheet" href="css/style.css" />
@@ -31,6 +31,7 @@
   <div class="popover-row"><span class="popover-label">Status</span><span id="gps-popover-status">Searching</span></div>
   <div class="popover-row"><span class="popover-label">Accuracy</span><span id="gps-popover-accuracy">&mdash;</span></div>
   <div class="popover-row"><span class="popover-label">Position</span><span id="gps-popover-coords">&mdash;</span></div>
+  <div class="popover-row"><span class="popover-label">Elevation</span><span id="gps-popover-elevation">&mdash;</span></div>
   <div class="popover-row"><span class="popover-label">Updated</span><span id="gps-popover-age">&mdash;</span></div>
   <button id="btn-gps-resync" class="btn-secondary full-width">Resync GPS</button>
 </div>
@@ -62,7 +63,9 @@
      stay crisp instead of dissolving at the edges too. -->
 <div id="compass-ribbon" class="hidden" data-popover-trigger>
   <div id="compass-ribbon-window">
-    <div id="compass-ribbon-track"></div>
+    <div id="compass-ribbon-track">
+      <div id="compass-nav-diamond" class="hidden"></div>
+    </div>
   </div>
   <div class="compass-ribbon-pointer"></div>
   <div id="compass-heading-readout">---&deg;</div>
@@ -72,7 +75,7 @@
 <!-- Floating action buttons - all collapsed behind a single menu toggle -->
 <div id="fab-stack">
   <div id="fab-menu-items" class="fab-menu-items hidden">
-    <button id="btn-compass" class="fab compass-fab" title="Reset to North">
+    <button id="btn-compass" class="fab compass-fab" title="Lock map to your heading">
       <svg id="compass-needle" viewBox="0 0 40 40" width="30" height="30">
         <circle cx="20" cy="20" r="18" fill="#171d26" stroke="#3a4655" stroke-width="1.5"/>
         <polygon points="20,4 24,20 20,17 16,20" fill="#e6484f"/>
@@ -191,6 +194,7 @@
       <button id="btn-route-details-rename" class="btn-secondary">Rename</button>
       <button id="btn-route-details-delete" class="btn-danger">Delete</button>
     </div>
+    <button id="btn-route-details-navigate" class="btn-primary full-width">Start navigation</button>
     <h3>Segments</h3>
     <ul id="route-details-segments" class="data-list"></ul>
   </div>
@@ -208,6 +212,17 @@
       </div>
       <label class="switch">
         <input type="checkbox" id="toggle-metric-units" />
+        <span class="switch-track"></span>
+      </label>
+    </div>
+
+    <div class="toggle-row">
+      <div>
+        <div class="toggle-title">Left-hand mode</div>
+        <div class="hint">Moves the menu and the flag/route controls to the left, and the legends, scale bar and navigation bar to the right.</div>
+      </div>
+      <label class="switch">
+        <input type="checkbox" id="toggle-left-handed" />
         <span class="switch-track"></span>
       </label>
     </div>
@@ -259,8 +274,7 @@
     </div>
 
     <p class="hint" style="margin-top:18px; border-top:1px solid var(--border-soft); padding-top:14px;">
-      Cairn is developed by 0x44616D69616E.<br>
-      App icon: "Cairn" from the Temaki icon set by Bryan Housel, CC0 license.
+      Datum is developed by 0x44616D69616E.
     </p>
   </div>
 </div>
@@ -268,7 +282,7 @@
 <!-- First-launch onboarding dialogs -->
 <div id="dialog-onboarding-offline" class="dialog dialog-centered hidden">
   <h2>Before you head out</h2>
-  <p class="hint" style="font-size:14.5px; color: var(--text);">Cairn only works offline for areas you've downloaded ahead of time. Satellite, topo, and trail imagery for a region needs to be downloaded first - from the download icon in the menu - while you still have signal.</p>
+  <p class="hint" style="font-size:14.5px; color: var(--text);">Datum only works offline for areas you've downloaded ahead of time. Satellite, topo, and trail imagery for a region needs to be downloaded first - from the download icon in the menu - while you still have signal.</p>
   <div class="dialog-actions">
     <button id="btn-onboarding-offline-ok" class="btn-primary full-width">Got it</button>
   </div>
@@ -276,7 +290,7 @@
 
 <div id="dialog-onboarding-storage" class="dialog dialog-centered hidden">
   <h2>Set up storage?</h2>
-  <p class="hint" style="font-size:14.5px; color: var(--text);">Cairn can back up your flags, routes, tracks, and settings to a folder on your device, so you can restore them later or move them to a new phone. You can do this later from Settings instead.</p>
+  <p class="hint" style="font-size:14.5px; color: var(--text);">Datum can back up your flags, routes, tracks, and settings to a folder on your device, so you can restore them later or move them to a new phone. You can do this later from Settings instead.</p>
   <div class="dialog-actions">
     <button id="btn-onboarding-storage-later" class="btn-secondary">Later</button>
     <button id="btn-onboarding-storage-setup" class="btn-primary">Set up now</button>
@@ -285,7 +299,7 @@
 
 <div id="dialog-storage-folder" class="dialog dialog-centered hidden">
   <h2>Choose a folder</h2>
-  <p class="hint" style="font-size:14.5px; color: var(--text);">Cairn will create a "Cairn" folder inside whichever one you pick.</p>
+  <p class="hint" style="font-size:14.5px; color: var(--text);">Datum will create a "Datum" folder inside whichever one you pick.</p>
   <div class="dialog-actions">
     <button id="btn-folder-browse" class="btn-primary full-width">Browse for folder…</button>
   </div>
@@ -324,9 +338,27 @@
   <label>Notes <textarea id="wp-notes" rows="2"></textarea></label>
   <label>Icon</label>
   <div id="wp-icon-picker" class="icon-picker"></div>
+  <div id="wp-bind-section" class="hidden">
+    <p class="hint" id="wp-bind-status"></p>
+    <button id="btn-bind-flag" class="btn-secondary full-width hidden">Bind to route</button>
+    <button id="btn-unbind-flag" class="btn-secondary full-width hidden">Unbind from route</button>
+  </div>
   <div class="dialog-actions">
     <button id="btn-delete-waypoint" class="btn-danger">Delete</button>
     <button id="btn-save-waypoint" class="btn-primary">Save</button>
+  </div>
+</div>
+
+<!-- Generic "pick one of these routes" list - only ever shown when a
+     flag sits within the tie threshold of two or more routes at once,
+     which should be rare; every other case auto-binds to the closest
+     without asking. -->
+<div id="dialog-route-choice" class="dialog dialog-centered hidden">
+  <h2>Which route?</h2>
+  <p class="hint">This flag is close to more than one route.</p>
+  <div id="route-choice-list"></div>
+  <div class="dialog-actions">
+    <button id="btn-route-choice-cancel" class="btn-secondary">Cancel</button>
   </div>
 </div>
 
@@ -362,17 +394,17 @@
 
 <!-- Route planning status pill (replaces the old top banner) -->
 <!-- Flag mode status pill: pick which icon new flags use, undo/redo drops -->
-<div id="flag-status-pill" class="status-pill hidden" style="flex-direction: column; align-items: stretch;">
+<div id="flag-status-pill" class="status-pill control-pill hidden" style="flex-direction: column-reverse; align-items: stretch;">
   <div style="display:flex; align-items:center; gap:8px;">
     <span data-icon="flag" class="pill-icon"></span>
     <button id="btn-undo-flag" class="icon-btn tiny pill-icon-btn" data-icon="undo" title="Undo last flag"></button>
     <button id="btn-redo-flag" class="icon-btn tiny pill-icon-btn" data-icon="redo" title="Redo"></button>
     <button id="btn-flag-icon-toggle" class="pill-btn pill-btn-ghost">Icon: Flag</button>
   </div>
-  <div id="flag-type-picker" class="icon-picker hidden" style="margin-top:8px;"></div>
+  <div id="flag-type-picker" class="icon-picker hidden" style="margin-bottom:8px;"></div>
 </div>
 
-<div id="route-status-pill" class="status-pill hidden">
+<div id="route-status-pill" class="status-pill control-pill hidden">
   <span data-icon="route" class="pill-icon"></span>
   <span id="route-distance">0.0 mi</span>
   <button id="btn-undo-route" class="icon-btn tiny pill-icon-btn" data-icon="undo" title="Undo last point"></button>
@@ -385,6 +417,42 @@
 <div id="record-status-pill" class="status-pill hidden">
   <span class="pill-icon recording-dot"></span>
   <span id="record-stats">0.0 mi · 0:00</span>
+</div>
+
+<!-- Nearby-route picker - shown instead of the single-route Start bar when
+     more than one saved route passes within range. Selecting an entry
+     previews it on the map (solid line, panned into view) without
+     committing, so several can be compared before confirming. -->
+<div id="dialog-nav-route-picker" class="nav-picker hidden">
+  <h3 class="nav-picker-title">Routes near you</h3>
+  <p class="hint">Tap one to preview it, then start navigating.</p>
+  <ul id="nav-route-picker-list" class="data-list"></ul>
+  <div class="dialog-actions">
+    <button id="btn-nav-picker-cancel" class="btn-secondary">Cancel</button>
+    <button id="btn-nav-picker-confirm" class="btn-primary">Start</button>
+  </div>
+</div>
+
+<!-- Automatic "you're near a route" suggestion - no tap needed to discover
+     it, appears on its own via GPS proximity (see checkNavSuggestion in
+     app.js). Shares the nav HUD's position since the two are mutually
+     exclusive - this hides the instant navigation actually starts. -->
+<div id="nav-suggest" class="hidden">
+  <span id="nav-suggest-label">Start navigating</span>
+  <button id="btn-nav-suggest-start" class="pill-btn">Start</button>
+</div>
+
+<!-- Navigation HUD - bottom-anchored (not the top status-pill row above),
+     specifically so it can never collide with the recording pill: you can
+     record a track while navigating a route, and the two need to coexist
+     on screen at once without a layout fight. -->
+<div id="nav-hud" class="hidden">
+  <div class="nav-hud-row">
+    <div class="nav-hud-stat"><span id="nav-remaining">--</span><small>remaining</small></div>
+    <div class="nav-hud-stat" id="nav-next-waypoint-block"><span id="nav-next-waypoint">--</span><small>to next waypoint</small></div>
+    <button id="btn-nav-stop" class="pill-btn pill-btn-ghost">Stop</button>
+  </div>
+  <p class="hint hidden" id="nav-off-route-warning"></p>
 </div>
 
 <!-- Map overlays: legends and radar playback controls live ON the map

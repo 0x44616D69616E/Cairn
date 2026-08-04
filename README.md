@@ -1,10 +1,43 @@
-# Cairn
+# Datum
 
 A fully offline topo, satellite, and trail map for Android, built for the moment you lose signal and still need to know where you are.
 
-Cairn works entirely offline once you've downloaded a region: satellite imagery, topo contours, trails, public land ownership, borders, and street labels are all cached on-device, not fetched on demand. Weather radar is the one exception, since that's inherently live data and requires a connection to be meaningful.
+Datum works entirely offline once you've downloaded a region: satellite imagery, topo contours, trails, public land ownership, borders, and street labels are all cached on-device, not fetched on demand. Weather radar is the one exception, since that's inherently live data and requires a connection to be meaningful.
 
 No account. No analytics. Your flags, routes, and tracks never leave your phone unless you explicitly export a backup.
+
+## What's new in 1.2.0
+
+Cairn is now **Datum**. New name, new icon, same app: a datum is the reference frame every coordinate is measured against, which is closer to what this actually is.
+
+### New
+
+- **Route navigation** — start navigating a saved route and watch it get consumed as you go, with remaining distance, distance to the next waypoint, and an off-route warning if you stray. Track recording keeps working alongside it.
+- **Nearby routes** — when you're close enough to start one, Datum says so on its own. If several are in range, a picker lets you preview each on the map before committing.
+- **Waypoints bound to routes** — drop a flag on a route and it binds to it, marked with a ring in the route's colour. Bound flags become the waypoints navigation counts down to. Binding also works manually from the flag's own panel.
+- **Heading lock** — tap the compass to lock the map to the direction you're facing, tap again to return to north and free rotation. On automatically while navigating.
+- **Left-hand mode** — mirrors the whole layout: menu and tools to the left, legends, scale bar and navigation bar to the right.
+- **Elevation** in the GPS details panel.
+
+### Improved
+
+- **Position updates are roughly five times more frequent.** The location request was capped at one update per five seconds and permitted Android to batch them for up to ten, which is why the marker lagged behind real movement.
+- **The compass is smoother and cheaper.** Heading now comes from Android's fused rotation-vector sensor with true-north correction from the World Magnetic Model, smoothing adapts to whether you're holding still or turning, and the sensor runs at a third of its previous rate. Map rotation is animated independently of the sensor, so it's fluid rather than stepped.
+- **Recording rejects unusable fixes** rather than baking a GPS jump into a saved track, and no longer redraws the whole track on every point.
+- **Duplicate names are caught** for routes and flags, with the next free name suggested rather than just refusing.
+
+### Fixed
+
+- Layers going blank, weather radar frames failing to load or playing back empty, and radar getting stuck on "Loading…"
+- Tapping a route or track while placing a flag or a route point opened its popup instead of registering the tap
+- The map jumping back to your position after you'd panned or pinched away from it
+- The compass ribbon losing its markings after the phone had been backgrounded
+- Rotation being mirrored east-to-west, and the position marker pointing the wrong way while navigating
+- Numerous layout collisions between the menu, legends, scale bar, and the navigation panels
+
+### Note on upgrading
+
+Backups now go to a **Datum** folder rather than a **Cairn** one. Existing backups are untouched on disk, but the app will look in the new folder and won't list them: move the files across, or re-select the folder from Settings.
 
 ## What's new in 1.1.0
 
@@ -67,8 +100,8 @@ export JAVA_HOME=$PREFIX/lib/jvm/java-17-openjdk
 ### Clone and build
 
 ```bash
-git clone https://github.com/0x44616D69616E/Cairn.git
-cd cairn
+git clone https://github.com/0x44616D69616E/Datum.git
+cd Datum
 npm install
 npx cap add android      # first time only
 npm run fix-manifest     # ensures location permissions are present
@@ -93,6 +126,7 @@ cd android
 1. Re-adds the location and storage permissions, which `cap sync` can silently drop from the generated Android manifest.
 2. Generates `AllFilesAccessPlugin.java` and registers it, for the storage folder browser.
 3. Generates `CompassSensorPlugin.java` and registers it, for the heading ribbon.
+4. Sets the app name and copies the launcher icon from `resources/android/` into the native project.
 
 Both plugins are generated rather than hand-maintained, so they're safe to regenerate at any time. The script finds `MainActivity.java` by searching for it rather than deriving the path from `appId` — those two can legitimately disagree if the Android project was generated before an app rename.
 
@@ -129,14 +163,18 @@ scripts/
   ensure-manifest-permissions.js  - re-adds permissions cap sync can drop
   ensure-storage-plugin.js         - generates + registers AllFilesAccessPlugin.java
   ensure-compass-plugin.js          - generates + registers CompassSensorPlugin.java
+  ensure-branding.js                 - sets the app name and installs the launcher icon
   lib/patchMainActivity.js           - shared MainActivity registration helper
+resources/
+  icon-512.png                        - source app icon
+  android/mipmap-*/                   - generated launcher densities
 ```
 
 ## Installing the APK
 
-Download the latest APK from [Releases](https://github.com/0x44616D69616E/Cairn/releases/latest), or grab v1.1.0 directly [here](https://github.com/0x44616D69616E/Cairn/releases/download/v1.1.0/cairn-v1.1.0.apk).
+Download the latest APK from [Releases](https://github.com/0x44616D69616E/Datum/releases/latest).
 
-Cairn isn't distributed through the Play Store, so Android shows two separate warnings the first time you install it:
+Datum isn't distributed through the Play Store, so Android shows two separate warnings the first time you install it:
 
 1. A basic "install from unknown sources" permission prompt. Tap Settings on that screen, allow installs from the app you used to open the file, then go back and tap the file again.
 2. A Google Play Protect warning saying it hasn't seen an app from this developer before. This is a "no prior history" flag, not a virus scan result. Tap "Install anyway."
@@ -145,7 +183,7 @@ Full step-by-step with screenshots is on [the website](https://freemaps.org).
 
 ## Known issues
 
-See [GitHub Issues](https://github.com/0x44616D69616E/Cairn/issues) for the current list.
+See [GitHub Issues](https://github.com/0x44616D69616E/Datum/issues) for the current list.
 
 ## License
 
@@ -153,11 +191,10 @@ MIT, see [LICENSE](LICENSE). Provided as-is, with no warranty; see the Terms of 
 
 ## Support
 
-Cairn is free with no ads and no subscription. If you want to support the project, there's a [Ko-fi](https://ko-fi.com/corruptedwizards). Bug reports and feature requests through GitHub Issues are just as valuable and always welcome.
+Datum is free with no ads and no subscription. If you want to support the project, there's a [Ko-fi](https://ko-fi.com/corruptedwizards). Bug reports and feature requests through GitHub Issues are just as valuable and always welcome.
 
 ## Credits
 
 - Developed by [0x44616D69616E](https://github.com/0x44616D69616E)
-- App icon: "Cairn" from the [Temaki icon set](https://www.figma.com/community/file/1179584099185267918) by Bryan Housel, CC0 license
 - Map data: OpenTopoMap (CC-BY-SA), Esri/Maxar/Earthstar Geographics, Waymarked Trails, OpenStreetMap contributors, USGS/BLM, RainViewer, US Census Bureau, Natural Earth
 - Built with [Leaflet](https://leafletjs.com/), [leaflet-rotate](https://github.com/fnicollier/Leaflet.Rotate), and [Capacitor](https://capacitorjs.com/)

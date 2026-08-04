@@ -1,11 +1,13 @@
 {
   "appId": "com.alienwizard.cairn",
-  "appName": "Cairn",
+  "appName": "Datum",
   "webDir": "www",
   "bundledWebRuntime": false,
   "plugins": {
     "Geolocation": {
-      "permissions": ["location"]
+      "permissions": [
+        "location"
+      ]
     }
   }
 }

@@ -30,7 +30,12 @@ try {
   CapAllFilesAccess = null;
 }
 
-export const STORAGE_DIR = 'Cairn'; // subfolder created under wherever the user picks
+// Renamed from 'Cairn' in the Datum rebrand. NOTE: this changes where
+// backups are written. Anyone who already had backups in a "Cairn" folder
+// will still have them - untouched, on disk - but the app will now look in
+// "Datum" and won't list them. Moving the old files across (or re-picking
+// the folder) is the migration.
+export const STORAGE_DIR = 'Datum'; // subfolder created under wherever the user picks
 
 export function isFilesystemAvailable() {
   return !!CapFilesystem;
@@ -85,7 +90,7 @@ export async function setupStorage(directory, relativePath = '') {
   // browsing to it themselves.
   await CapFilesystem.writeFile({
     path: `${dir}/README.txt`,
-    data: 'This folder holds Cairn app data backups (flags, routes, tracks, sessions, layer presets, settings).\nMap tiles are not stored here - they stay cached on the device and can always be re-downloaded from Settings.',
+    data: 'This folder holds Datum app data backups (flags, routes, tracks, sessions, layer presets, settings).\nMap tiles are not stored here - they stay cached on the device and can always be re-downloaded from Settings.',
     directory,
     encoding: 'utf8'
   });
@@ -124,7 +129,7 @@ async function gatherAllData() {
 export async function exportAllData() {
   if (!CapFilesystem) throw new Error('Filesystem access is not available in this environment.');
   const data = await gatherAllData();
-  const filename = `cairn-backup-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+  const filename = `datum-backup-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
   await CapFilesystem.writeFile({
     path: `${backupDir(getConfiguredRelativePath())}/${filename}`,
     data: JSON.stringify(data, null, 2),
